@@ -1,0 +1,27 @@
+# Core
+numpy>=1.26
+pyyaml>=6.0
+pydantic>=2.5
+
+# RL
+gymnasium>=0.29
+stable-baselines3>=2.3.0
+torch>=2.2
+
+# Rendering (replay only — training headless)
+pygame>=2.5
+
+# Persistence
+redis>=5.0
+psycopg[binary]>=3.1
+chromadb>=0.4
+
+# Logging / metrics
+tensorboard>=2.15
+rich>=13.7
+
+# Dev
+pytest>=8.0
+pytest-cov>=5.0
+ruff>=0.4
+mypy>=1.10

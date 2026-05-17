@@ -1,0 +1,35 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+.venv/
+venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# Data
+data/snapshots/*
+data/replays/*
+data/logs/*
+!data/**/.gitkeep
+
+# Model artifacts
+*.pt
+*.pth
+*.ckpt
+*.zip
+
+# Notebooks
+.ipynb_checkpoints/
+
+# Local config overrides
+configs/local/
+.env
