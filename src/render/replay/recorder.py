@@ -187,6 +187,7 @@ class ReplayRecorder:
         tom_policy: PolicyFn | Any,
         jerry_label: str = "unknown",
         tom_label: str = "unknown",
+        episode_id: str | None = None,
     ) -> Replay:
         """Run one full episode and return the captured Replay.
 
@@ -196,6 +197,14 @@ class ReplayRecorder:
           - Be raw callables: callable(obs, world) → Action int
 
         We try each protocol in order.
+
+        If `tom_policy` has an attached L1 memory (ChemicalTom with
+        `self.l1`), this method automatically sets the L1's locker
+        positions from the freshly-generated map. The L1's episode_id
+        is whatever was already on the L1 (typically set externally).
+        Callers that want a per-episode-id-isolated L1 should construct
+        a new L1Memory(client, episode_id=...) before each call and
+        attach it to the Tom.
         """
         world = World(self.world_config, seed=self.seed)
         _, jerry_obs = world.reset()
@@ -204,6 +213,12 @@ class ReplayRecorder:
         for pol in (jerry_policy, tom_policy):
             if hasattr(pol, "reset") and callable(pol.reset):
                 pol.reset()
+
+        # If Tom has L1 memory attached, give it the map's locker positions.
+        # This must happen AFTER policy reset (which clears L1 state) but
+        # BEFORE any tick runs.
+        if hasattr(tom_policy, "l1") and tom_policy.l1 is not None:
+            tom_policy.l1.set_locker_positions(list(world.grid.locker_positions))
 
         # Capture static map info
         vent_pairs = []

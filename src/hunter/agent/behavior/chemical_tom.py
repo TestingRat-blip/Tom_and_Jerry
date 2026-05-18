@@ -25,6 +25,7 @@ from __future__ import annotations
 import random
 from collections import deque
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from src.env.world.world import Event, World
 from src.hunter.agent.behavior.baseline import (
@@ -37,6 +38,9 @@ from src.hunter.agent.chemistry.config import ChemistryConfig
 from src.hunter.agent.drives.config import DrivesConfig
 from src.hunter.agent.drives.drives import DriveSystem, Drives
 from src.utils.types import ACTION_DELTAS, Action, Position
+
+if TYPE_CHECKING:
+    from src.hunter.agent.memory.l1 import L1Memory
 
 
 @dataclass(frozen=True, slots=True)
@@ -65,6 +69,12 @@ class ChemicalTomConfig:
     pursue_memory_cortisol_mult: float = -0.3       # frustrated Tom gives up faster
     investigate_dwell_curiosity_mult: float = +0.4  # curious Tom investigates longer
 
+    # L1 contribution: weight applied to L1's false-noise factor when
+    # computing the modulated noise threshold. The factor is already
+    # bounded ∈ [0, L1Config.max_false_noise_factor], so this scales it
+    # further when integrating into the threshold expression.
+    l1_false_noise_weight: float = 1.0
+
     # State selection biases
     # When adjacent to Jerry, ATTACK vs PURSUE blends by aggression
     attack_aggression_threshold: float = 0.25       # below this, no committed attack at d=1
@@ -87,6 +97,7 @@ class ChemicalTom(ScriptedTom):
         chemical_config: ChemicalTomConfig | None = None,
         drives_config: DrivesConfig | None = None,
         chemistry_config: ChemistryConfig | None = None,
+        l1: "L1Memory | None" = None,
         seed: int | None = None,
     ):
         super().__init__(config=config, seed=seed)
@@ -95,6 +106,12 @@ class ChemicalTom(ScriptedTom):
         self.chemistry = Chemistry()
         self.drive_system = DriveSystem(drives_config)
         self.chemistry_system = ChemistrySystem(chemistry_config)
+
+        # L1 per-encounter memory. Optional — None means "no L1," which
+        # restores the original Phase 2 ChemicalTom behavior exactly.
+        # When set, Tom records noise events / sightings each tick and
+        # reads false-noise factor when computing the noise threshold.
+        self.l1: "L1Memory | None" = l1
 
         # Tracking for prediction: last two Jerry positions Tom has seen
         self._jerry_position_history: deque[Position] = deque(maxlen=3)
@@ -110,6 +127,9 @@ class ChemicalTom(ScriptedTom):
         self._jerry_position_history.clear()
         self.last_predicted_jerry_pos = None
         self.last_prediction_steps = 0
+        # If L1 is attached, clear its episode state too.
+        if self.l1 is not None:
+            self.l1.reset()
 
     def __call__(self, world: World) -> Action:
         """Per-tick decision.
@@ -131,6 +151,18 @@ class ChemicalTom(ScriptedTom):
             events=events,
             jerry_visible=world._tom_can_see_jerry(),
         )
+
+        # 1b. Update L1 with what just happened. L1 will record noises,
+        # try to verify pending noises against the current sighting, and
+        # bump locker/heatmap counters as appropriate.
+        if self.l1 is not None:
+            self.l1.observe_events(
+                events,
+                tom_pos=world.tom.position,
+                jerry_pos=world.jerry.position,
+                jerry_visible=world._tom_can_see_jerry(),
+                tick=world.tick_count,
+            )
 
         # 2. Update Jerry-position history (used for prediction)
         # Only push when Jerry's position has actually changed, so the deque
@@ -174,12 +206,29 @@ class ChemicalTom(ScriptedTom):
         cur_term = self.drives.curiosity * self.chemical_config.investigate_dwell_curiosity_mult
         return max(1, int(base * (1.0 + cur_term)))
 
-    def _modulated_noise_threshold(self) -> float:
-        """Noise level needed to trigger INVESTIGATE state."""
+    def _modulated_noise_threshold(self, tom_pos: Position | None = None) -> float:
+        """Noise level needed to trigger INVESTIGATE state.
+
+        If `tom_pos` is given AND L1 is attached, the L1 false-noise factor
+        near Tom's current position is folded in. The factor is bounded
+        ∈ [0, max_false_noise_factor] so the composition stays sane:
+
+            threshold = base * (1 + curiosity_term + l1_factor * l1_weight)
+
+        Curiosity LOWERS the threshold; L1 false-noise factor RAISES it.
+        They cancel out near zero, compose smoothly elsewhere.
+        """
         base = self.config.noise_investigate_threshold
         cur_term = self.drives.curiosity * self.chemical_config.noise_threshold_curiosity_mult
-        # Negative coefficient → curious Tom has a LOWER threshold (hears more)
-        return max(0.05, base * (1.0 + cur_term))
+
+        l1_term = 0.0
+        if self.l1 is not None and tom_pos is not None:
+            l1_factor = self.l1.false_noise_factor_near(tom_pos)
+            l1_term = l1_factor * self.chemical_config.l1_false_noise_weight
+
+        # Negative cur_term → curious Tom has a LOWER threshold (hears more)
+        # Positive l1_term → fooled Tom has a HIGHER threshold (skeptical)
+        return max(0.05, base * (1.0 + cur_term + l1_term))
 
     def _modulated_scent_threshold(self) -> float:
         base = self.config.scent_search_threshold
@@ -242,7 +291,7 @@ class ChemicalTom(ScriptedTom):
         dirs = {"N": obs.sound_n, "S": obs.sound_s,
                 "E": obs.sound_e, "W": obs.sound_w}
         loudest = max(dirs.items(), key=lambda kv: kv[1])
-        if loudest[1] >= self._modulated_noise_threshold():
+        if loudest[1] >= self._modulated_noise_threshold(tom_pos=world.tom.position):
             step_map = {
                 "N": Position(0, -3), "S": Position(0, 3),
                 "E": Position(3, 0), "W": Position(-3, 0),

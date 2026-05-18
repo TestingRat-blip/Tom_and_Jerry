@@ -62,6 +62,9 @@ def _make_tom_policy(spec: str, seed: int):
     Supported:
       "scripted"        the Phase 1 baseline (ScriptedTom)
       "chemical"        Phase 2 ChemicalTom (drives + chemistry + prediction)
+      "chemical-l1"     ChemicalTom + L1 per-encounter memory (Phase 3)
+                        requires Redis at the default config
+                        (localhost:6380, db=1, namespace tj:)
       "wait"            no-op Tom (useful for watching Jerry behavior alone)
       "model:PATH"      a saved PPO Tom checkpoint (Phase 4+; here for symmetry)
     """
@@ -72,6 +75,24 @@ def _make_tom_policy(spec: str, seed: int):
         from src.hunter.agent.behavior.chemical_tom import ChemicalTom
         tom = ChemicalTom(seed=seed)
         return (tom, "chemical")
+    if spec == "chemical-l1":
+        from src.hunter.agent.behavior.chemical_tom import ChemicalTom
+        from src.hunter.agent.memory.l1 import L1Memory
+        from src.persistence.redis.client import RedisClient
+        import uuid
+        # Each watch session gets its own L1 episode_id so multiple
+        # sessions don't share keyspace.
+        client = RedisClient()
+        try:
+            client.ping()
+        except Exception as e:
+            raise SystemExit(
+                f"chemical-l1 requires Redis, but ping failed: {e}\n"
+                f"Start it with: docker compose up -d"
+            )
+        l1 = L1Memory(client, episode_id=f"watch_{uuid.uuid4().hex[:8]}")
+        tom = ChemicalTom(l1=l1, seed=seed)
+        return (tom, "chemical-l1")
     if spec == "wait":
         return (lambda world: int(Action.WAIT), "wait")
     if spec.startswith("model:"):
