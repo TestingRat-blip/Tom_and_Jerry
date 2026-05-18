@@ -40,7 +40,10 @@ from src.hunter.agent.drives.drives import DriveSystem, Drives
 from src.utils.types import ACTION_DELTAS, Action, Position
 
 if TYPE_CHECKING:
+    from src.env.world.world import Grid
     from src.hunter.agent.memory.l1 import L1Memory
+    from src.hunter.agent.memory.l2_lookup import L2Lookup
+    from src.persistence.sqlite.l2_store import L2Store
 
 
 @dataclass(frozen=True, slots=True)
@@ -98,6 +101,8 @@ class ChemicalTom(ScriptedTom):
         drives_config: DrivesConfig | None = None,
         chemistry_config: ChemistryConfig | None = None,
         l1: "L1Memory | None" = None,
+        l2_lookup: "L2Lookup | None" = None,
+        l2_store: "L2Store | None" = None,
         seed: int | None = None,
     ):
         super().__init__(config=config, seed=seed)
@@ -113,12 +118,29 @@ class ChemicalTom(ScriptedTom):
         # reads false-noise factor when computing the noise threshold.
         self.l1: "L1Memory | None" = l1
 
+        # Phase 4 L2 persistent memory. Both optional and INDEPENDENT:
+        #   - l2_lookup: read side. Used by warm_start_for_episode() to
+        #     pre-seed L1 with priors from past episodes.
+        #   - l2_store:  write side. Used by distill_at_episode_end() to
+        #     write this episode's summary.
+        # You can have one without the other (e.g. warm-start from a
+        # frozen L2 database in eval mode, no writes). Both require L1
+        # to be attached — without L1 there's nothing to warm-start or
+        # to distill.
+        self.l2_lookup: "L2Lookup | None" = l2_lookup
+        self.l2_store: "L2Store | None" = l2_store
+
         # Tracking for prediction: last two Jerry positions Tom has seen
         self._jerry_position_history: deque[Position] = deque(maxlen=3)
 
         # For external inspection
         self.last_predicted_jerry_pos: Position | None = None
         self.last_prediction_steps: int = 0
+
+        # Phase 4 tracking: when did Tom first sight Jerry this episode?
+        # Used in distillation as a "how findable is Jerry on this map" stat.
+        # None means Tom never sighted Jerry this episode.
+        self._ticks_to_first_sight: int | None = None
 
     def reset(self) -> None:
         super().reset()
@@ -127,9 +149,85 @@ class ChemicalTom(ScriptedTom):
         self._jerry_position_history.clear()
         self.last_predicted_jerry_pos = None
         self.last_prediction_steps = 0
+        self._ticks_to_first_sight = None
         # If L1 is attached, clear its episode state too.
         if self.l1 is not None:
             self.l1.reset()
+
+    def warm_start_for_episode(
+        self,
+        grid: "Grid",
+        jerry_policy: object,
+        jerry_label: str | None = None,
+    ) -> bool:
+        """Phase 4: pull priors from L2 and pre-seed L1 before episode begins.
+
+        Call AFTER reset() and BEFORE the first tick. The caller (typically
+        ReplayRecorder, env wrapper, or training loop) supplies the grid
+        and Jerry policy so we can compute fingerprints.
+
+        Returns True if warm-start was applied (L1 + L2 lookup both present
+        and at least one past episode found), False otherwise.
+
+        No-op (returns False) when L1 or L2 lookup isn't attached — Tom
+        behaves like Phase 3.
+        """
+        if self.l1 is None or self.l2_lookup is None:
+            return False
+        # Compute fingerprints
+        from src.hunter.agent.memory.fingerprint import (
+            fingerprint_jerry,
+            fingerprint_map,
+        )
+        fine_fp, coarse_fp = fingerprint_map(grid)
+        jerry_fp = fingerprint_jerry(jerry_policy, label=jerry_label)
+        # Query L2 + build the warm-start
+        warm = self.l2_lookup.build_warm_start(
+            map_fp_fine=fine_fp,
+            map_fp_coarse=coarse_fp,
+            jerry_fp=jerry_fp,
+        )
+        if warm.is_empty:
+            return False
+        self.l1.apply_warm_start(warm)
+        return True
+
+    def distill_at_episode_end(
+        self,
+        grid: "Grid",
+        jerry_policy: object,
+        outcome: str,
+        total_ticks: int,
+        total_jerry_reward: float,
+        tom_label: str = "",
+        jerry_label: str | None = None,
+        notes: dict | None = None,
+    ) -> bool:
+        """Phase 4: summarize this episode's L1 into L2 at episode end.
+
+        Call BEFORE the next reset(). reset() clears L1's in-episode
+        counters, which distillation needs to read.
+
+        Returns True if distillation happened (L1 + L2 store both present),
+        False otherwise. No-op when L1 or L2 store isn't attached.
+        """
+        if self.l1 is None or self.l2_store is None:
+            return False
+        from src.hunter.agent.memory.distillation import distill_l1_to_summary
+        summary = distill_l1_to_summary(
+            l1=self.l1,
+            grid=grid,
+            jerry_policy=jerry_policy,
+            outcome=outcome,
+            total_ticks=total_ticks,
+            total_jerry_reward=total_jerry_reward,
+            ticks_to_first_sight=self._ticks_to_first_sight,
+            tom_label=tom_label,
+            jerry_label=jerry_label,
+            notes=notes,
+        )
+        self.l2_store.insert(summary)
+        return True
 
     def __call__(self, world: World) -> Action:
         """Per-tick decision.
@@ -139,6 +237,10 @@ class ChemicalTom(ScriptedTom):
         before step()). So we update chemistry/drives from those events,
         then decide this tick's action.
         """
+        # Track first sight time for the episode summary
+        if self._ticks_to_first_sight is None and world._tom_can_see_jerry():
+            self._ticks_to_first_sight = world.tick_count
+
         # 1. Update drives/chemistry from the previous step's events.
         events = list(getattr(world, "_events_this_tick", []))
         self.drive_system.tick(

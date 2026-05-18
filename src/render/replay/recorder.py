@@ -220,6 +220,16 @@ class ReplayRecorder:
         if hasattr(tom_policy, "l1") and tom_policy.l1 is not None:
             tom_policy.l1.set_locker_positions(list(world.grid.locker_positions))
 
+        # Phase 4: if Tom has L2 lookup attached, warm-start L1 from past
+        # episodes. Tom's warm_start_for_episode is a no-op when L1 or
+        # L2 lookup is missing, so this is safe regardless of config.
+        if hasattr(tom_policy, "warm_start_for_episode"):
+            tom_policy.warm_start_for_episode(
+                grid=world.grid,
+                jerry_policy=jerry_policy,
+                jerry_label=jerry_label if jerry_label != "unknown" else None,
+            )
+
         # Capture static map info
         vent_pairs = []
         seen_vents: set = set()
@@ -346,6 +356,21 @@ class ReplayRecorder:
 
         replay.total_ticks = world.tick_count
         replay.total_jerry_reward = cum_reward
+
+        # Phase 4: distill L1 → L2 BEFORE the next reset() would wipe L1's
+        # in-episode counters. Like warm_start, this is a no-op when L1 or
+        # L2 store is missing, so safe to call unconditionally.
+        if hasattr(tom_policy, "distill_at_episode_end"):
+            tom_policy.distill_at_episode_end(
+                grid=world.grid,
+                jerry_policy=jerry_policy,
+                outcome=replay.outcome,
+                total_ticks=replay.total_ticks,
+                total_jerry_reward=replay.total_jerry_reward,
+                tom_label=tom_label if tom_label != "unknown" else "",
+                jerry_label=jerry_label if jerry_label != "unknown" else None,
+            )
+
         return replay
 
     # ---- private -------------------------------------------------------
