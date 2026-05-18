@@ -13,15 +13,31 @@ behind methods that match the questions Tom actually asks:
 The behavior tree reads `false_noise_factor_near` to depreciate noise-
 following when nearby noises have been distractions. Higher factor →
 higher effective noise threshold → Tom needs LOUDER noise to investigate.
+
+PHASE 4 EXTENSION — warm-start priors:
+At episode begin, L1 can be pre-seeded with priors from L2 via
+`apply_warm_start(WarmStart)`. The priors live in parallel dicts
+(separate from in-episode counters). Behavior queries (false_noise_factor_near,
+heatmap_hottest, locker_suspicion, most_suspicious_locker) read BOTH
+warm-start + in-episode and return the combined value. The distillation
+pipeline (which produces NEW L2 entries) reads in-episode counters
+ONLY — so priors don't compound across episodes.
+
+Warm-start is cleared by `reset()` along with in-episode state. To
+apply warm-start: reset(), then apply_warm_start(...).
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from src.env.world.world import Event, EventType
 from src.persistence.redis.client import RedisClient
 from src.persistence.redis.l1_store import L1Store, NoiseRecord
 from src.utils.types import Position
+
+if TYPE_CHECKING:
+    from src.hunter.agent.memory.l2_lookup import WarmStart
 
 
 @dataclass(frozen=True, slots=True)
@@ -90,10 +106,41 @@ class L1Memory:
         # for finalized state; this is per-tick scratchpad).
         self._pending: list[_PendingNoise] = []
 
+        # Phase 4 warm-start priors. Parallel to the store's counters;
+        # behavior queries combine both. Distillation reads store-only.
+        self._warm_heatmap: dict[tuple[int, int], float] = {}
+        self._warm_lockers: dict[tuple[int, int], float] = {}
+        self._warm_false_noise: dict[tuple[int, int], float] = {}
+
     def reset(self) -> None:
-        """Clear all L1 state for a new episode."""
+        """Clear all L1 state for a new episode.
+
+        Clears BOTH in-episode counters AND warm-start priors. To use
+        warm-start: call reset() first, then apply_warm_start(...).
+        """
         self.store.clear_episode()
         self._pending.clear()
+        self._warm_heatmap.clear()
+        self._warm_lockers.clear()
+        self._warm_false_noise.clear()
+
+    def apply_warm_start(self, warm: "WarmStart") -> None:
+        """Pre-seed L1 with priors from past episodes.
+
+        Call AFTER reset() and BEFORE the first tick. The warm-start
+        priors influence behavior queries (false_noise_factor_near,
+        heatmap_hottest, locker_suspicion) but do NOT affect the
+        in-episode counters that distillation will read at episode end.
+
+        This separation prevents the bug of priors compounding across
+        episodes — each episode learns from past episodes but only
+        records its own observations into the next L2 summary.
+        """
+        # Take copies so the caller's WarmStart can be reused/mutated
+        # without affecting our state.
+        self._warm_heatmap = dict(warm.heatmap)
+        self._warm_lockers = dict(warm.lockers)
+        self._warm_false_noise = dict(warm.false_noise)
 
     def set_locker_positions(self, positions: list[Position]) -> None:
         self.locker_positions = set(positions)
@@ -170,45 +217,69 @@ class L1Memory:
         noise threshold near `pos`. Higher = more false noises in the
         area, so Tom should be more skeptical.
 
-        Used by ChemicalTom's _modulated_noise_threshold to depreciate
-        noise-following when Tom has been fooled repeatedly nearby.
+        Combines in-episode false-noise counts (this life) with warm-start
+        priors (past lives). Tom is skeptical of areas where EITHER
+        previous Toms got fooled OR he's been fooled this episode.
         """
-        # Sum false-noise counts within lookup radius
-        total = 0
+        # Sum in-episode false-noise counts within lookup radius
+        total: float = 0.0
+        radius = self.config.false_noise_lookup_radius
         for (x, y), count in self.store.all_false_noise_counts().items():
-            if abs(x - pos.x) + abs(y - pos.y) <= self.config.false_noise_lookup_radius:
+            if abs(x - pos.x) + abs(y - pos.y) <= radius:
                 total += count
+        # Add warm-start priors within the same radius
+        for (x, y), weight in self._warm_false_noise.items():
+            if abs(x - pos.x) + abs(y - pos.y) <= radius:
+                total += weight
+
         if total == 0:
             return 0.0
-        # Saturating linear function: 0 at zero counts, max at saturation count
         saturation = self.config.false_noise_saturation
         fraction = min(1.0, total / saturation)
         return fraction * self.config.max_false_noise_factor
 
-    def locker_suspicion(self, locker_pos: Position) -> int:
-        """How many times Jerry has been sighted near this locker this episode."""
-        return self.store.get_locker_sightings(locker_pos.x, locker_pos.y)
+    def locker_suspicion(self, locker_pos: Position) -> float:
+        """Combined in-episode + warm-start sighting count for this locker."""
+        in_ep = self.store.get_locker_sightings(locker_pos.x, locker_pos.y)
+        warm = self._warm_lockers.get((locker_pos.x, locker_pos.y), 0.0)
+        return in_ep + warm
 
     def most_suspicious_locker(self) -> Position | None:
-        """The locker with the highest sighting count, or None if no lockers
-        have been sighted near.
+        """The locker with the highest combined (in-episode + warm) sighting
+        count, or None if no locker has nonzero suspicion from either source.
         """
-        sightings = self.store.all_locker_sightings()
-        if not sightings:
+        combined: dict[tuple[int, int], float] = {}
+        for (x, y), c in self.store.all_locker_sightings().items():
+            combined[(x, y)] = combined.get((x, y), 0.0) + c
+        for (x, y), w in self._warm_lockers.items():
+            combined[(x, y)] = combined.get((x, y), 0.0) + w
+        if not combined:
             return None
-        (best_xy, _) = max(sightings.items(), key=lambda kv: kv[1])
+        (best_xy, _) = max(combined.items(), key=lambda kv: kv[1])
         return Position(best_xy[0], best_xy[1])
 
-    def heatmap_hottest(self, top_n: int = 5) -> list[tuple[Position, int]]:
-        """Return the top-N most-sighted tiles this episode."""
-        heat = self.store.all_heatmap_counts()
-        if not heat:
+    def heatmap_hottest(self, top_n: int = 5) -> list[tuple[Position, float]]:
+        """Top-N tiles by combined sighting count (in-episode + warm-start).
+
+        Note: return type changed from int counts to float counts in
+        Phase 4 because warm-start weights are floats. Callers that
+        treat the count as int should cast explicitly.
+        """
+        combined: dict[tuple[int, int], float] = {}
+        for (x, y), c in self.store.all_heatmap_counts().items():
+            combined[(x, y)] = combined.get((x, y), 0.0) + c
+        for (x, y), w in self._warm_heatmap.items():
+            combined[(x, y)] = combined.get((x, y), 0.0) + w
+        if not combined:
             return []
-        items = sorted(heat.items(), key=lambda kv: kv[1], reverse=True)
+        items = sorted(combined.items(), key=lambda kv: kv[1], reverse=True)
         return [(Position(x, y), c) for (x, y), c in items[:top_n]]
 
     def total_noise_events(self) -> int:
-        """How many noises have been recorded this episode (useful for
-        bookkeeping/inspection).
+        """How many noises have been recorded THIS EPISODE.
+
+        Reads in-episode counters ONLY — does not include warm-start.
+        Used by distillation to summarize the current episode without
+        accidentally double-counting priors.
         """
         return sum(self.store.all_false_noise_counts().values())
