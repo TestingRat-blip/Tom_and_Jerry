@@ -1,0 +1,32 @@
+# Dedicated Redis instance for Tom_and_Jerry.
+# Runs on port 6380 (host) -> 6379 (container) so it can coexist with
+# any other Redis instances on the machine (e.g. Vera's).
+#
+# Usage:
+#   docker compose up -d        # start in background
+#   docker compose down         # stop
+#   docker compose logs -f      # tail logs
+#   docker exec tj-redis redis-cli ping   # quick health check
+#
+# Data is persisted to a named Docker volume so restarts don't wipe state.
+# For L1 alone this doesn't matter (L1 is per-episode), but Phase 4's
+# L2/L3 will need persistence.
+
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: tj-redis
+    restart: unless-stopped
+    ports:
+      - "6380:6379"
+    volumes:
+      - tj-redis-data:/data
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory", "256mb", "--maxmemory-policy", "allkeys-lru"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+
+volumes:
+  tj-redis-data:
