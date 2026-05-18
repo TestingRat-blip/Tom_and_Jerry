@@ -61,12 +61,17 @@ def _make_tom_policy(spec: str, seed: int):
 
     Supported:
       "scripted"        the Phase 1 baseline (ScriptedTom)
+      "chemical"        Phase 2 ChemicalTom (drives + chemistry + prediction)
       "wait"            no-op Tom (useful for watching Jerry behavior alone)
       "model:PATH"      a saved PPO Tom checkpoint (Phase 4+; here for symmetry)
     """
     if spec == "scripted":
         tom = ScriptedTom(seed=seed)
         return (tom, "scripted")
+    if spec == "chemical":
+        from src.hunter.agent.behavior.chemical_tom import ChemicalTom
+        tom = ChemicalTom(seed=seed)
+        return (tom, "chemical")
     if spec == "wait":
         return (lambda world: int(Action.WAIT), "wait")
     if spec.startswith("model:"):

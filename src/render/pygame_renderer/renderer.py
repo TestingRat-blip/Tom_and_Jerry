@@ -33,7 +33,7 @@ from src.utils.types import Action, TileType
 @dataclass(frozen=True, slots=True)
 class RenderConfig:
     tile_px: int = 32
-    panel_width_px: int = 280
+    panel_width_px: int = 340
     panel_padding_px: int = 16
     fps_base: int = 8           # baseline playback speed (ticks per second)
     fps_min: int = 1
@@ -60,6 +60,23 @@ class RenderConfig:
     sound_flash: tuple = (230, 220, 80)
     catch_flash: tuple = (255, 80, 80)
 
+    # Phase 2 — chemistry/drive bar colors
+    adrenaline_color: tuple = (240, 100, 60)
+    cortisol_color: tuple = (180, 140, 60)
+    dopamine_color: tuple = (240, 180, 240)
+    oxytocin_color: tuple = (200, 120, 200)
+    serotonin_color: tuple = (120, 200, 220)
+
+    hunger_color: tuple = (220, 160, 60)
+    aggression_color: tuple = (220, 80, 80)
+    caution_color: tuple = (120, 180, 220)
+    curiosity_color: tuple = (180, 220, 120)
+    fatigue_color: tuple = (140, 140, 160)
+    social_bond_color: tuple = (200, 160, 220)
+
+    # Prediction target marker
+    prediction_marker: tuple = (240, 140, 60)
+
 
 # ---- the renderer ------------------------------------------------------
 
@@ -78,7 +95,7 @@ class ReplayRenderer:
         self.grid_px_w = replay.grid_width * self.config.tile_px
         self.grid_px_h = replay.grid_height * self.config.tile_px
         self.win_w = self.grid_px_w + self.config.panel_width_px
-        self.win_h = max(self.grid_px_h, 640)
+        self.win_h = max(self.grid_px_h, 820)
 
         self.screen = pygame.display.set_mode((self.win_w, self.win_h))
         self.clock = pygame.time.Clock()
@@ -213,10 +230,28 @@ class ReplayRenderer:
     def _draw_agents(self, frame: Frame) -> None:
         cfg = self.config
         tp = cfg.tile_px
-        # Tom
+
+        # Phase 2: prediction marker (drawn UNDER agents)
+        if frame.tom_predicted_jerry is not None and frame.tom_prediction_steps > 0:
+            px, py = frame.tom_predicted_jerry
+            # Only draw if it's actually different from current Jerry position
+            if (px, py) != frame.jerry_pos:
+                cx = px * tp + tp // 2
+                cy = py * tp + tp // 2
+                # X-marker — Tom's predicted intercept point
+                size = tp // 4
+                pygame.draw.line(self.screen, cfg.prediction_marker,
+                                 (cx - size, cy - size), (cx + size, cy + size), 2)
+                pygame.draw.line(self.screen, cfg.prediction_marker,
+                                 (cx - size, cy + size), (cx + size, cy - size), 2)
+
+        # Tom — with subtle adrenaline tint
         tx, ty = frame.tom_pos
         tom_center = (tx * tp + tp // 2, ty * tp + tp // 2)
-        pygame.draw.circle(self.screen, cfg.tom, tom_center, tp // 3)
+        # Adrenaline-tinted Tom: shift from cfg.tom toward bright red as adrenaline rises
+        adr = float(frame.tom_chemistry.get("adrenaline", 0.0)) if frame.tom_chemistry else 0.0
+        tom_color = self._adrenaline_tinted(cfg.tom, adr)
+        pygame.draw.circle(self.screen, tom_color, tom_center, tp // 3)
         pygame.draw.circle(self.screen, cfg.tom_outline, tom_center, tp // 3, 2)
         self._draw_facing_arrow(tom_center, Action(frame.tom_facing), cfg.tom_outline)
 
@@ -233,6 +268,17 @@ class ReplayRenderer:
         # Sight line if Tom sees Jerry
         if frame.tom_sees_jerry and not frame.jerry_in_locker:
             pygame.draw.line(self.screen, cfg.sight_line, tom_center, jerry_center, 1)
+
+    def _adrenaline_tinted(self, base_color: tuple, adrenaline: float) -> tuple:
+        """Blend base color toward bright red as adrenaline rises."""
+        if adrenaline <= 0:
+            return base_color
+        target = (255, 60, 60)
+        a = min(adrenaline, 1.0)
+        return tuple(
+            int(base_color[i] * (1 - a * 0.5) + target[i] * a * 0.5)
+            for i in range(3)
+        )
 
     def _draw_facing_arrow(self, center, facing: Action, color) -> None:
         """Small triangle indicating facing direction."""
@@ -279,12 +325,29 @@ class ReplayRenderer:
                          (panel_x, 0, cfg.panel_width_px, self.win_h))
         x = panel_x + cfg.panel_padding_px
         y = cfg.panel_padding_px
+        bar_width = cfg.panel_width_px - cfg.panel_padding_px * 2
 
         def line(text: str, font=self.font_small, color=cfg.text_primary, gap: int = 4):
             nonlocal y
             surf = font.render(text, True, color)
             self.screen.blit(surf, (x, y))
             y += surf.get_height() + gap
+
+        def bar(label: str, value: float, color: tuple, gap: int = 2):
+            nonlocal y
+            # Label + value
+            txt = self.font_small.render(f"{label:<11} {value:.2f}", True, cfg.text_primary)
+            self.screen.blit(txt, (x, y))
+            y += txt.get_height() + 2
+            # Bar background
+            bar_h = 6
+            pygame.draw.rect(self.screen, (40, 40, 48),
+                             (x, y, bar_width, bar_h))
+            # Filled bar
+            filled = int(bar_width * max(0.0, min(1.0, value)))
+            if filled > 0:
+                pygame.draw.rect(self.screen, color, (x, y, filled, bar_h))
+            y += bar_h + gap
 
         # Title
         line("TOM AND JERRY", self.font_large, gap=8)
@@ -304,37 +367,72 @@ class ReplayRenderer:
         line(f"Frame: {self.cur_frame + 1} / {len(self.replay.frames)}",
              self.font_small, cfg.text_dim)
         line(f"Speed: {self.fps} fps  {'PAUSED' if self.paused else ''}",
-             self.font_small, cfg.text_dim, gap=12)
+             self.font_small, cfg.text_dim, gap=8)
 
         # Tom info
         line("--- TOM ---", self.font_small, cfg.text_dim)
         line(f"Pos:    {frame.tom_pos}")
         line(f"State:  {frame.tom_state or '-'}")
         line(f"Action: {Action(frame.tom_action).name}")
+        # Prediction info — only show if Tom is predicting
+        if frame.tom_prediction_steps > 0:
+            line(f"Predicting {frame.tom_prediction_steps} steps ahead",
+                 self.font_small, cfg.prediction_marker)
         line(f"Sees Jerry: {frame.tom_sees_jerry}",
              color=cfg.text_warn if frame.tom_sees_jerry else cfg.text_primary,
-             gap=12)
+             gap=8)
+
+        # Phase 2: chemistry bars (if present)
+        if frame.tom_chemistry:
+            line("--- CHEMISTRY ---", self.font_small, cfg.text_dim)
+            chem_colors = {
+                "adrenaline": cfg.adrenaline_color,
+                "cortisol": cfg.cortisol_color,
+                "dopamine": cfg.dopamine_color,
+                "oxytocin": cfg.oxytocin_color,
+                "serotonin": cfg.serotonin_color,
+            }
+            for name in ("adrenaline", "cortisol", "dopamine", "serotonin", "oxytocin"):
+                if name in frame.tom_chemistry:
+                    bar(name, float(frame.tom_chemistry[name]), chem_colors[name])
+            y += 4
+
+        # Phase 2: drives bars (if present)
+        if frame.tom_drives:
+            line("--- DRIVES ---", self.font_small, cfg.text_dim)
+            drive_colors = {
+                "hunger": cfg.hunger_color,
+                "aggression": cfg.aggression_color,
+                "caution": cfg.caution_color,
+                "curiosity": cfg.curiosity_color,
+                "fatigue": cfg.fatigue_color,
+                "social_bond": cfg.social_bond_color,
+            }
+            for name in ("hunger", "aggression", "caution", "curiosity",
+                         "fatigue", "social_bond"):
+                if name in frame.tom_drives:
+                    bar(name, float(frame.tom_drives[name]), drive_colors[name])
+            y += 4
 
         # Jerry info
         line("--- JERRY ---", self.font_small, cfg.text_dim)
         line(f"Pos:     {frame.jerry_pos}")
         line(f"Action:  {Action(frame.jerry_action).name}")
         line(f"Locker:  {frame.jerry_in_locker}")
-        line(f"Alive:   {frame.jerry_alive}",
-             color=cfg.text_warn if not frame.jerry_alive else cfg.text_primary)
         line(f"Reward this tick:  {frame.jerry_reward:+.3f}",
              color=cfg.text_warn if frame.jerry_reward < 0 else cfg.text_primary)
         line(f"Reward cumulative: {frame.jerry_cum_reward:+.2f}",
              color=cfg.text_warn if frame.jerry_cum_reward < 0 else cfg.text_primary,
-             gap=16)
+             gap=8)
 
-        # Controls
-        line("--- CONTROLS ---", self.font_small, cfg.text_dim)
-        line("SPACE  pause/play", self.font_small, cfg.text_dim)
-        line("← →    step backward/forward", self.font_small, cfg.text_dim)
-        line("↑ ↓    speed up/down", self.font_small, cfg.text_dim)
-        line("R      restart", self.font_small, cfg.text_dim)
-        line("ESC    quit", self.font_small, cfg.text_dim)
+        # Controls — only if we still have vertical room
+        if y < self.win_h - 110:
+            line("--- CONTROLS ---", self.font_small, cfg.text_dim)
+            line("SPACE  pause/play", self.font_small, cfg.text_dim)
+            line("← →    step backward/forward", self.font_small, cfg.text_dim)
+            line("↑ ↓    speed up/down", self.font_small, cfg.text_dim)
+            line("R      restart", self.font_small, cfg.text_dim)
+            line("ESC    quit", self.font_small, cfg.text_dim)
 
 
 def watch_replay(replay: Replay | str | Path,

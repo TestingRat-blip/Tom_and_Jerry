@@ -67,6 +67,16 @@ class Frame:
     # Event types fired this tick (for highlighting in renderer)
     events: tuple[int, ...] = ()
 
+    # ---- Phase 2 extensions (optional, defaulted) ----------------------
+    # Tom's chemistry levels this tick — empty dict for non-chemical Toms
+    tom_chemistry: dict = field(default_factory=dict)
+    # Tom's drive state this tick — empty dict for non-chemical Toms
+    tom_drives: dict = field(default_factory=dict)
+    # Predicted Jerry position if Tom is predicting ahead (else == jerry_pos)
+    tom_predicted_jerry: tuple[int, int] | None = None
+    # How many steps ahead Tom is currently predicting (0 = no prediction)
+    tom_prediction_steps: int = 0
+
 
 @dataclass
 class Replay:
@@ -128,6 +138,12 @@ class Replay:
             fd["sound_events"] = tuple(tuple(s) for s in fd.get("sound_events", []))
             fd["scent_cells"] = tuple(tuple(s) for s in fd.get("scent_cells", []))
             fd["events"] = tuple(fd.get("events", []))
+            # Phase 2 fields — handle old replays that don't have them
+            fd.setdefault("tom_chemistry", {})
+            fd.setdefault("tom_drives", {})
+            pred = fd.get("tom_predicted_jerry")
+            fd["tom_predicted_jerry"] = tuple(pred) if pred is not None else None
+            fd.setdefault("tom_prediction_steps", 0)
             frames.append(Frame(**fd))
         return cls(
             grid_width=data["grid_width"],
@@ -262,6 +278,26 @@ class ReplayRecorder:
             if hasattr(tom_policy, "state"):
                 tom_state = getattr(tom_policy.state, "name", "")
 
+            # Phase 2: capture chemistry, drives, prediction if Tom is ChemicalTom
+            tom_chemistry: dict = {}
+            tom_drives: dict = {}
+            tom_predicted_jerry: tuple[int, int] | None = None
+            tom_prediction_steps: int = 0
+            if hasattr(tom_policy, "chemistry"):
+                try:
+                    tom_chemistry = tom_policy.chemistry.snapshot()
+                except Exception:
+                    tom_chemistry = {}
+            if hasattr(tom_policy, "drives"):
+                try:
+                    tom_drives = tom_policy.drives.snapshot()
+                except Exception:
+                    tom_drives = {}
+            pred = getattr(tom_policy, "last_predicted_jerry_pos", None)
+            if pred is not None:
+                tom_predicted_jerry = (pred.x, pred.y)
+            tom_prediction_steps = int(getattr(tom_policy, "last_prediction_steps", 0))
+
             frame = Frame(
                 tick=world.tick_count,
                 tom_pos=(world.tom.position.x, world.tom.position.y),
@@ -280,6 +316,10 @@ class ReplayRecorder:
                 sound_events=sound_events,
                 scent_cells=tuple(scent_cells),
                 events=tuple(int(e.type) for e in events),
+                tom_chemistry=tom_chemistry,
+                tom_drives=tom_drives,
+                tom_predicted_jerry=tom_predicted_jerry,
+                tom_prediction_steps=tom_prediction_steps,
             )
             replay.frames.append(frame)
 
