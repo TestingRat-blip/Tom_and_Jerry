@@ -65,6 +65,12 @@ def _make_tom_policy(spec: str, seed: int):
       "chemical-l1"     ChemicalTom + L1 per-encounter memory (Phase 3)
                         requires Redis at the default config
                         (localhost:6380, db=1, namespace tj:)
+      "chemical-l2"     ChemicalTom + L1 + L2 persistent memory (Phase 4)
+                        requires Redis (as chemical-l1) AND writes to
+                        data/persistence/tj_l2.db. Each run of watch.py
+                        warm-starts from past sessions and writes a new
+                        summary at the end — so successive runs against
+                        the same map+jerry build up persistent memory.
       "wait"            no-op Tom (useful for watching Jerry behavior alone)
       "model:PATH"      a saved PPO Tom checkpoint (Phase 4+; here for symmetry)
     """
@@ -93,6 +99,35 @@ def _make_tom_policy(spec: str, seed: int):
         l1 = L1Memory(client, episode_id=f"watch_{uuid.uuid4().hex[:8]}")
         tom = ChemicalTom(l1=l1, seed=seed)
         return (tom, "chemical-l1")
+    if spec == "chemical-l2":
+        from src.hunter.agent.behavior.chemical_tom import ChemicalTom
+        from src.hunter.agent.memory.l1 import L1Memory
+        from src.hunter.agent.memory.l2_lookup import L2Lookup
+        from src.persistence.redis.client import RedisClient
+        from src.persistence.sqlite.client import SQLiteClient
+        from src.persistence.sqlite.l2_store import L2Store
+        import uuid
+        # Redis check (same as chemical-l1)
+        redis_client = RedisClient()
+        try:
+            redis_client.ping()
+        except Exception as e:
+            raise SystemExit(
+                f"chemical-l2 requires Redis, but ping failed: {e}\n"
+                f"Start it with: docker compose up -d"
+            )
+        # SQLite — uses the default path data/persistence/tj_l2.db.
+        # The SQLiteClient creates parent dirs and migrates schema on first use.
+        sqlite_client = SQLiteClient()
+        l2_store = L2Store(sqlite_client)
+        l2_lookup = L2Lookup(l2_store)
+        l1 = L1Memory(redis_client,
+                      episode_id=f"watch_l2_{uuid.uuid4().hex[:8]}")
+        tom = ChemicalTom(
+            l1=l1, l2_lookup=l2_lookup, l2_store=l2_store, seed=seed,
+        )
+        print(f"  [chemical-l2] L2 has {l2_store.count()} prior episode summaries")
+        return (tom, "chemical-l2")
     if spec == "wait":
         return (lambda world: int(Action.WAIT), "wait")
     if spec.startswith("model:"):
