@@ -1,0 +1,7 @@
+[tool.pytest.ini_options]
+markers = [
+    "redis: integration tests that require a running Redis instance (run with `pytest -m redis`)",
+    "slow: tests that take more than a few seconds (run with `pytest -m 'not slow'` to skip)",
+]
+# By default, skip redis-marked tests. To run them: pytest -m redis
+addopts = "-m 'not redis'"
