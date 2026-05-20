@@ -7,6 +7,8 @@ still runs and colors execution.
 
 Phase 6a: belief layer.
 Phase 6b: Conductor scaffolding (observe-only).
+Phase 6c: targeting handover (belief drives Tom's memory fields).
+Phase 6d: sectors + directed patrol.
 """
 from src.hunter.agent.conductor.belief import (
     BeliefConfig,
@@ -15,6 +17,7 @@ from src.hunter.agent.conductor.belief import (
     SuspicionType,
 )
 from src.hunter.agent.conductor.conductor import Conductor, ConductorConfig
+from src.hunter.agent.conductor.sectors import SectorConfig, SectorMap
 
 __all__ = [
     "BeliefConfig",
@@ -23,4 +26,6 @@ __all__ = [
     "SuspicionType",
     "Conductor",
     "ConductorConfig",
+    "SectorConfig",
+    "SectorMap",
 ]

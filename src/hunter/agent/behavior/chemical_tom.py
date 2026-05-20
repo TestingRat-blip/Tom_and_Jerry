@@ -475,6 +475,35 @@ class ChemicalTom(ScriptedTom):
             return []
         return self.conductor.belief.live_sources(world.tick_count)
 
+    def _patrol(self, world: World) -> Action:
+        """Phase 6d: Conductor-directed patrol when a Conductor is attached.
+
+        When no Conductor: fall back to the base ScriptedTom random-target
+        patrol (Phase 1-5 behavior).
+
+        With a Conductor: walk toward the Conductor's directed patrol target
+        (the least-recently-visited sector), so patrol becomes a legible
+        coverage sweep instead of random wandering. We reuse Tom's own
+        patrol-retarget cadence so movement stays smooth — we only swap the
+        SOURCE of the target, mirroring the 6c handover philosophy.
+        """
+        if self.conductor is None:
+            return super()._patrol(world)
+
+        # Re-target on the same cadence as the base patrol: when we have no
+        # target, when we've reached it, or when it's gone stale.
+        need_new = (
+            self.patrol_target is None
+            or world.tom.position.manhattan(self.patrol_target)
+                <= self.config.patrol_retarget_distance
+            or world.tick_count - self.patrol_target_set_tick
+                > self.config.patrol_retarget_after
+        )
+        if need_new:
+            self.patrol_target = self.conductor.patrol_target(world)
+            self.patrol_target_set_tick = world.tick_count
+        return self._step_toward(world.tom.position, self.patrol_target, world)
+
     # ---- override _update_memory to use modulated noise threshold ----
 
     def _update_memory(self, world: World) -> None:

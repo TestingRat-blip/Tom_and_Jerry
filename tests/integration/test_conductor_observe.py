@@ -34,6 +34,16 @@ class _FakeScent:
         return self._grad
 
 
+class _FakeGrid:
+    """Minimal grid stub: dimensions + everything walkable (no walls)."""
+    def __init__(self, width=30, height=30):
+        self.width = width
+        self.height = height
+
+    def is_walkable(self, p):
+        return 0 <= p.x < self.width and 0 <= p.y < self.height
+
+
 class _FakeTom:
     def __init__(self, pos):
         self.position = pos
@@ -54,6 +64,7 @@ class _FakeWorld:
         self._can_see = can_see
         self._events_this_tick = events or []
         self.scent = _FakeScent(scent_grad or {"N": 0, "S": 0, "E": 0, "W": 0})
+        self.grid = _FakeGrid()
 
     def _tom_can_see_jerry(self):
         return self._can_see

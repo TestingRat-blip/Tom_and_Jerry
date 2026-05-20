@@ -30,6 +30,7 @@ from src.hunter.agent.conductor.belief import (
     SuspicionBelief,
     SuspicionType,
 )
+from src.hunter.agent.conductor.sectors import SectorConfig, SectorMap
 from src.utils.types import Position
 
 
@@ -53,6 +54,11 @@ class ConductorConfig:
     # Scale factor applied to scent gradient strength -> birth confidence
     # input. Keeps scent suspicions appropriately weak vs sightings.
     scent_strength_scale: float = 1.0
+    # Sector decomposition for patrol (Phase 6d).
+    sectors: SectorConfig = SectorConfig()
+    # Max manhattan search radius when snapping a sector centroid to the
+    # nearest walkable tile for a patrol target.
+    patrol_snap_radius: int = 6
 
 
 class Conductor:
@@ -76,12 +82,27 @@ class Conductor:
         # For external inspection / debugging / replay overlay later.
         self.last_suggested_target: Position | None = None
         self.last_suggested_type: SuspicionType | None = None
+        # Sector map for patrol (Phase 6d). Lazily built on first observe,
+        # because the Conductor doesn't know grid dimensions at construction.
+        self._sectors: SectorMap | None = None
+
+    def _ensure_sectors(self, world: World) -> SectorMap:
+        """Build the sector map on first use (we need grid dimensions)."""
+        if self._sectors is None:
+            self._sectors = SectorMap(
+                grid_width=world.grid.width,
+                grid_height=world.grid.height,
+                config=self.config.sectors,
+            )
+        return self._sectors
 
     def reset(self) -> None:
-        """Clear belief at episode start."""
+        """Clear belief and sector visit history at episode start."""
         self.belief.clear()
         self.last_suggested_target = None
         self.last_suggested_type = None
+        if self._sectors is not None:
+            self._sectors.reset()
 
     # ---- perception ---------------------------------------------------
 
@@ -117,6 +138,12 @@ class Conductor:
 
         # --- SCENT: projected from the gradient at Tom's tile ---
         self._observe_scent(world, now)
+
+        # --- sector visit tracking (Phase 6d patrol) ---
+        # Record that Tom is physically in this sector now, so the LRV
+        # patrol policy knows which zones are freshly covered.
+        sectors = self._ensure_sectors(world)
+        sectors.mark_visited(world.tom.position, now)
 
         # --- decay / prune ---
         self.belief.tick(now)
@@ -171,3 +198,42 @@ class Conductor:
         Returns None if belief is empty.
         """
         return self.belief.strongest(world.tick_count)
+
+    # ---- patrol (Phase 6d) --------------------------------------------
+
+    def patrol_target(self, world: World) -> Position:
+        """Where the Conductor directs Tom when the belief is empty.
+
+        Picks the least-recently-visited sector (excluding the one Tom is
+        currently in) and returns a walkable tile near its centroid. This
+        produces legible coverage sweeps rather than the random wandering
+        of the base ScriptedTom patrol.
+
+        Always returns a valid walkable Position (falls back to Tom's own
+        tile if no walkable tile can be found near the target sector, which
+        shouldn't happen on connected maps).
+        """
+        sectors = self._ensure_sectors(world)
+        stalest = sectors.stalest_sector(exclude_current=world.tom.position)
+        centroid = sectors.sector_centroid(stalest)
+        target = self._nearest_walkable(world, centroid)
+        return target if target is not None else world.tom.position
+
+    def _nearest_walkable(self, world: World, center: Position) -> Position | None:
+        """Find the nearest walkable tile to `center` within snap radius.
+
+        Expanding-ring manhattan search. Returns None if nothing walkable
+        is found within patrol_snap_radius (degenerate maps only).
+        """
+        if world.grid.is_walkable(center):
+            return center
+        r_max = self.config.patrol_snap_radius
+        for r in range(1, r_max + 1):
+            # Scan the manhattan ring at radius r
+            for dx in range(-r, r + 1):
+                dy_abs = r - abs(dx)
+                for dy in ({dy_abs, -dy_abs} if dy_abs else {0}):
+                    cand = Position(center.x + dx, center.y + dy)
+                    if world.grid.is_walkable(cand):
+                        return cand
+        return None
