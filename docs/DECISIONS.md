@@ -52,40 +52,83 @@ Architectural lessons cross over freely. Code does not. Cross-contamination woul
 
 ---
 
-## ADR-007 — Discrete action space, swappable
-**Date:** 2026-05-17
-**Status:** Accepted
+## ADR-013 — Conductor (two-brain) architecture replaces BFS as Tom's strategic layer
+**Date:** 2026-05-20
+**Status:** Accepted (supersedes the implicit "BFS is Tom's targeting" assumption from Phase 1)
 
-Phase 1 uses a discrete action space for both Tom and Jerry: `{NORTH, SOUTH, EAST, WEST, WAIT, INTERACT}`. Grids are inherently discrete and PPO trains substantially faster on small action spaces. Action interface is abstracted behind an `ActionSpace` protocol so a continuous variant can be swapped in later (3D port, fine motor control) without rewriting agents.
+**Context.**
+The Phase 5 ceiling diagnostic proved that BFS pathfinding is Tom's
+dominant weapon: trained generalist Jerry survives 28% against BFS-Tom
+but 74% against the same Tom with BFS disabled (greedy). BFS is a
+hand-coded, non-adaptive strategic layer — it computes the shortest path
+to Jerry's *true* position and walks it. This caps the co-evolution
+arms race: a Jerry evolving against perfect pathfinding can only exploit
+thin margins, because Tom always knows the optimal route to the real
+Jerry.
+
+This contradicts the design intent. ADR-003 already named "conductor
+weights" as a learnable component, and the project's north star is the
+Alien: Isolation two-brain system — a local creature brain plus a
+director brain that knows more than the creature and feeds it hints.
+BFS short-circuits that vision by giving Tom perfect strategic knowledge
+for free.
+
+**Decision.**
+Replace BFS-as-targeting with a **Conductor** layer — a director brain
+that sits above Tom (the local brain) and directs his attention.
+
+- **Tom (local brain):** perception + movement + the existing five-state
+  behavior tree, chemistry, drives, and memory. Tom pathfinds toward a
+  *target the Conductor supplies*, NOT toward Jerry's true position.
+  Tom never reads Jerry's ground-truth location directly.
+- **The Conductor (director brain):** consumes world events (sounds and
+  their locations, sightings, scent gradients) and Tom's memory tiers,
+  maintains a *belief* about where Jerry is, and feeds Tom directives
+  ("investigate here", "patrol this region", "Jerry was last seen
+  there"). The Conductor's belief is necessarily imperfect — it works
+  from hints, not omniscience.
+
+Tom's competence now flows from how well the Conductor synthesizes
+imperfect information, which is a tunable (and later learnable) thing —
+not from a hand-coded shortest-path oracle.
+
+This pulls the director architecture forward from Phase 8 (where it was
+originally scoped as the stalker layer) into Phase 6 (as the core
+hunting architecture). The Phase 8 stalker becomes a natural extension:
+the Conductor gains a fear signal and a stalk-vs-commit directive,
+rather than requiring a from-scratch director build.
+
+**Sequencing (per Order A discipline):** build and verify the Conductor
+as a *scripted/hand-tuned* system first — it must produce sensible
+hunting (investigate sounds, follow hints, corner prey) as a static
+system before any part of it becomes learnable. Only then does
+co-evolution begin. This preserves the project's one-hard-thing-at-a-time
+discipline: ScriptedTom worked before ChemicalTom; L1 worked before L2;
+the scripted Conductor must work before the learnable Conductor.
+
+**Consequences.**
+- Phase 6 expands from "co-evolution" to "build Conductor architecture,
+  then co-evolve." Likely a two-stage phase. Downstream phase numbers
+  (pack mechanics, stalker) shift accordingly; numbering is not load-
+  bearing, sequencing discipline is.
+- The new scripted-Conductor + weakened-Tom system becomes the
+  "ScriptedTom-equivalent" baseline for the Conductor era. Existing
+  ScriptedTom is preserved as the Phase 1-5 reference.
+- Co-evolution progress can NOT be measured by raw catch rate — early
+  Conductor-Tom will be weaker than BFS-Tom (generalist already beats
+  greedy 74%). Progress = improvement-over-generations + generalization
+  to held-out Jerrys/conditions.
+- Tom's interface gains a hard rule: the local brain never accesses
+  Jerry's ground-truth position. All targeting flows through the
+  Conductor's belief. This is the architectural invariant that makes
+  the system honest (and that makes human-Jerry support possible later —
+  the Conductor reads observable signals, which exist whether Jerry is
+  PPO or human).
+- ADR-005 (hall of fame) still applies and may matter more — a
+  Conductor that can be confused has more degenerate-strategy corners to
+  fall into.
 
 ---
-
-## ADR-008 — Stacked observation space: egocentric sensors + local grid window
-**Date:** 2026-05-17
-**Status:** Accepted
-
-Observations combine:
-- Egocentric sensor readings (sound levels by direction, LOS hits, scent gradient, own drive/chemistry state if applicable)
-- A small local grid window (e.g. 7×7 centered on the agent) flattened into the vector
-
-This dual representation gives the agent both *what it senses as a creature* and *spatial context for navigation*. The sensor channel is the one that ports cleanly to 3D later; the grid window is a Phase 1–4 expedient that will be replaced or supplemented when perspective shifts.
-
-Critically: Tom and Jerry get *different* observation vectors. Jerry sees what a survivor sees. Tom sees what a predator senses (longer sound range, scent gradient, no minimap-style awareness of the full layout). This asymmetry is intentional and core to the design.
-
----
-
-## ADR-009 — Hybrid Tom interface: scripted execution, RL-shaped logging
-**Date:** 2026-05-17
-**Status:** Accepted
-
-Tom uses the same Gymnasium action interface as Jerry from day one, even though Phase 1 Tom is scripted. The scripted behavior tree emits actions through the env's `step()` API, identical to how a future learned Tom will. Additionally, Tom logs:
-- The observation it would have received as an RL agent
-- The action it actually took (chosen by behavior tree)
-- The reward it would have received under candidate reward functions
-
-This means: when Phase 4+ wants to train Tom (or train *parts* of Tom — node-unlock thresholds, drive baselines, chemistry curves), the data is already there. No refactor, no second integration pass. The scripted Tom is implicitly producing imitation-learning data the whole time.
-
-```
 
 ## Template for future entries
 
