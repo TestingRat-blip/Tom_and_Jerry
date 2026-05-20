@@ -56,15 +56,32 @@ Build order is deliberate. Earlier phases prove infrastructure works before late
 
 **Exit criteria:** all six Jerrys trainable, distinct behavior visible on replay, can hold one out for evaluation.
 
-## Phase 6 — Co-evolution
-- [ ] Co-evolution scheduler (alternating updates, generation snapshots)
-- [ ] Hall of fame: archive Toms, periodically spawn fresh-blood Jerrys against old Toms
-- [ ] Cross-generation tournament harness
-- [ ] Behavioral diversity metric
-- [ ] Surprise rate metric
-- [ ] Hold-out archetype eval loop
+## Phase 6 — The Conductor + Co-evolution
+Per ADR-013, Phase 6 became a two-stage phase: build the Conductor
+(two-brain architecture replacing BFS targeting), verify it scripted,
+THEN make it learnable and co-evolve. See `PHASE6_CONDUCTOR_DESIGN.md`.
 
-**Exit criteria:** Tom-N beats Tom-1 at the gen-1 task; diversity score does not collapse over 50 generations.
+**Stage 1 — Scripted Conductor (verify before learning):**
+- [ ] 6a Suspicion-source belief (typed, decaying) + unit tests
+- [ ] 6b Conductor scaffolding + tick hook; replace Tom's BFS targeting
+- [ ] 6c Sector decomposition + patrol sweep
+- [ ] 6d Modes (INVESTIGATE/STALK/RUSH/BAIT/PATROL) + chemistry override
+- [ ] 6e Verify static system vs base generalist Jerry (replays + sane catch rate)
+
+**Stage 2 — Learnable Conductor + co-evolution:**
+- [ ] 6f Identify learnable parameters (Conductor weights + Tom override weights)
+- [ ] 6g Co-evolution scheduler (alternating updates, generation snapshots)
+- [ ] 6h Hall of fame: archive Toms, spawn fresh-blood Jerrys against old Toms
+- [ ] 6i Cross-generation tournament harness + metrics
+- [ ] Behavioral diversity metric
+- [ ] Generalization eval (greedy/nearsight/bigmap conditions as held-out tests)
+
+**Exit criteria:** Stage 1 — scripted Conductor produces legible hunting
+(investigate/bait/over-commit) verified by replay, catch rate sane-but-
+below-BFS. Stage 2 — Tom-N beats Tom-1 at the gen-1 task; diversity score
+does not collapse over 50 generations; progress measured by improvement-
+over-generations + generalization, NOT raw catch rate (BFS removed, so
+early Conductor-Tom is weaker by design — see ADR-013).
 
 ## Phase 7 — Tuning + human eval
 - [ ] Weekly human-readability Likert rating protocol
@@ -89,7 +106,7 @@ Rough, based on prior project velocity:
 - Phase 3: ~3–5 days
 - Phase 4: ~1–2 weeks (this is the novel one, expect tuning pain)
 - Phase 5: ~3–5 days
-- Phase 6: ~1–2 weeks
+- Phase 6: Stage 1 (Conductor) ~1–2 weeks; Stage 2 (co-evolution) ~1–2 weeks. Expanded per ADR-013.
 - Phase 7: ongoing
 
 First genuinely terrifying Tom: target ~6–8 weeks from Phase 1 start.
