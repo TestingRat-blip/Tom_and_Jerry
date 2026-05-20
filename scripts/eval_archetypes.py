@@ -67,7 +67,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--tom-policies",
         nargs="+",
         default=["scripted"],
-        choices=["scripted", "chemical", "chemical-l2"],
+        choices=["scripted", "chemical", "chemical-l2", "conductor", "conductor-l2"],
         help="Which Tom variants to evaluate against. Multiple => "
              "cross-product of (archetype, tom) cells. Default: scripted only.",
     )
@@ -160,6 +160,11 @@ def make_tom_factory(spec: str, seed: int):
     default path. If you want the L2 to evolve during eval, use a separate
     script — this one is for head-to-head measurement, which requires a
     stationary opponent.
+
+    Phase 6f adds two more:
+      - "conductor":    ChemicalTom + Conductor (the two-brain hunter,
+                        no persistent memory)
+      - "conductor-l2": ChemicalTom + Conductor + frozen L2 memory
     """
     if spec == "scripted":
         def factory(s: int):
@@ -172,6 +177,40 @@ def make_tom_factory(spec: str, seed: int):
         def factory(s: int):
             return ChemicalTom(seed=s)
         return factory, "chemical"
+
+    if spec == "conductor":
+        from src.hunter.agent.behavior.chemical_tom import ChemicalTom
+        from src.hunter.agent.conductor import Conductor
+
+        def factory(s: int):
+            return ChemicalTom(conductor=Conductor(), seed=s)
+        return factory, "conductor"
+
+    if spec == "conductor-l2":
+        from src.hunter.agent.behavior.chemical_tom import ChemicalTom
+        from src.hunter.agent.conductor import Conductor
+        from src.hunter.agent.memory.l1 import L1Memory
+        from src.hunter.agent.memory.l2_lookup import L2Lookup
+        from src.persistence.redis.client import FakeRedis, RedisClient
+        from src.persistence.sqlite.client import SQLiteClient
+        from src.persistence.sqlite.l2_store import L2Store
+
+        sqlite_client = SQLiteClient()
+        l2_store = L2Store(sqlite_client)
+        l2_lookup = L2Lookup(l2_store)
+        prior_count = l2_store.count()
+        print(f"  [eval setup] conductor-l2 reading L2 with {prior_count} prior summaries")
+
+        def factory(s: int):
+            l1 = L1Memory(
+                client=RedisClient(client=FakeRedis()),
+                episode_id=f"eval_{uuid.uuid4().hex[:8]}",
+            )
+            return ChemicalTom(
+                l1=l1, l2_lookup=l2_lookup, l2_store=None,
+                conductor=Conductor(), seed=s,
+            )
+        return factory, "conductor-l2"
 
     if spec == "chemical-l2":
         from src.hunter.agent.behavior.chemical_tom import ChemicalTom

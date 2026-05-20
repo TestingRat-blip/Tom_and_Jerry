@@ -81,6 +81,13 @@ def _make_tom_policy(spec: str, seed: int):
         from src.hunter.agent.behavior.chemical_tom import ChemicalTom
         tom = ChemicalTom(seed=seed)
         return (tom, "chemical")
+    if spec == "conductor":
+        # Phase 6: ChemicalTom + Conductor (two-brain hunter). No Redis
+        # needed — the Conductor's belief is per-episode in-memory.
+        from src.hunter.agent.behavior.chemical_tom import ChemicalTom
+        from src.hunter.agent.conductor import Conductor
+        tom = ChemicalTom(conductor=Conductor(), seed=seed)
+        return (tom, "conductor")
     if spec == "chemical-l1":
         from src.hunter.agent.behavior.chemical_tom import ChemicalTom
         from src.hunter.agent.memory.l1 import L1Memory
