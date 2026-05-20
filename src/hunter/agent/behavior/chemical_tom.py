@@ -83,6 +83,12 @@ class ChemicalTomConfig:
     # When adjacent to Jerry, ATTACK vs PURSUE blends by aggression
     attack_aggression_threshold: float = 0.25       # below this, no committed attack at d=1
 
+    # Phase 6e — hunt-mode behavior.
+    # STALK: hold roughly this far from the target rather than closing all
+    # the way. The "playing with food" distance. RUSH ignores this and
+    # closes directly. Only meaningful when a Conductor is attached.
+    stalk_hold_distance: int = 4
+
 
 def _clamp(v: float, lo: float, hi: float) -> float:
     return max(lo, min(hi, v))
@@ -147,6 +153,16 @@ class ChemicalTom(ScriptedTom):
         # the SOURCE of the target changes.
         self.conductor: "Conductor | None" = conductor
 
+        # Phase 6e — hunt mode. Computed each tick when a Conductor is
+        # attached: the Conductor suggests a mode from its belief, Tom's
+        # chemistry can override it (high adrenaline → RUSH over-commit).
+        # Stored for action selection + external inspection / replay.
+        from src.hunter.agent.conductor.modes import HuntMode, ModeConfig
+        self.mode_config = ModeConfig()
+        self.current_mode: HuntMode = HuntMode.PATROL
+        self.suggested_mode: HuntMode = HuntMode.PATROL
+        self.mode_overridden: bool = False
+
         # Tracking for prediction: last two Jerry positions Tom has seen
         self._jerry_position_history: deque[Position] = deque(maxlen=3)
 
@@ -173,6 +189,11 @@ class ChemicalTom(ScriptedTom):
         # If a Conductor is attached, clear its belief for the new episode.
         if self.conductor is not None:
             self.conductor.reset()
+        # Reset hunt mode (Phase 6e)
+        from src.hunter.agent.conductor.modes import HuntMode
+        self.current_mode = HuntMode.PATROL
+        self.suggested_mode = HuntMode.PATROL
+        self.mode_overridden = False
 
     def warm_start_for_episode(
         self,
@@ -305,6 +326,7 @@ class ChemicalTom(ScriptedTom):
         if self.conductor is not None:
             self.conductor.observe(world)
             self._update_memory_from_conductor(world)
+            self._compute_mode(world)
         else:
             self._update_memory(world)
 
@@ -475,6 +497,36 @@ class ChemicalTom(ScriptedTom):
             return []
         return self.conductor.belief.live_sources(world.tick_count)
 
+    def _compute_mode(self, world: World) -> None:
+        """Phase 6e: decide this tick's hunt mode.
+
+        The Conductor suggests a mode from its strongest belief; Tom's
+        chemistry can override it (high adrenaline → RUSH). Stores
+        current_mode / suggested_mode / mode_overridden for action
+        selection and inspection.
+
+        Requires a Conductor; called only from __call__ when one is attached.
+        """
+        from src.hunter.agent.conductor.modes import HuntMode, decide_mode
+
+        strongest = self.conductor.belief.strongest(world.tick_count)
+        if strongest is None:
+            stype, conf = None, 0.0
+        else:
+            src, conf = strongest
+            stype = src.type
+
+        final, suggested, overridden = decide_mode(
+            suspicion_type=stype,
+            confidence=conf,
+            adrenaline=self.chemistry.adrenaline,
+            cortisol=self.chemistry.cortisol,
+            config=self.mode_config,
+        )
+        self.current_mode = final
+        self.suggested_mode = suggested
+        self.mode_overridden = overridden
+
     def _patrol(self, world: World) -> Action:
         """Phase 6d: Conductor-directed patrol when a Conductor is attached.
 
@@ -542,6 +594,12 @@ class ChemicalTom(ScriptedTom):
                 target = self.last_seen_jerry
             else:
                 return self._patrol(world)
+            # Phase 6e: STALK mode holds at a distance instead of closing.
+            # Only applies when a Conductor drives the mode and the mode is
+            # STALK. RUSH / INVESTIGATE / no-Conductor all close normally.
+            from src.hunter.agent.conductor.modes import HuntMode
+            if self.conductor is not None and self.current_mode == HuntMode.STALK:
+                return self._stalk_step(world, target)
             return self._step_toward(world.tom.position, target, world)
 
         if self.state == TomState.INVESTIGATE:
@@ -553,6 +611,26 @@ class ChemicalTom(ScriptedTom):
             return self._follow_scent(world)
 
         return self._patrol(world)
+
+    def _stalk_step(self, world: World, target: Position) -> Action:
+        """Phase 6e STALK behavior: maintain pressure at a distance rather
+        than closing all the way.
+
+        - If FARTHER than stalk_hold_distance: close (apply pressure).
+        - If AT or INSIDE the hold distance: hold position (WAIT) — the
+          "watching, not pouncing" beat that makes stalking feel patient.
+
+        This is the behavior a high-adrenaline Tom OVERRIDES via RUSH: an
+        amped Tom never enters _stalk_step (mode is RUSH), so he closes and
+        may over-commit. That divergence is the whole point of 6e.
+        """
+        d = world.tom.position.manhattan(target)
+        hold = self.chemical_config.stalk_hold_distance
+        if d > hold:
+            # Too far — close in to apply pressure.
+            return self._step_toward(world.tom.position, target, world)
+        # Within hold distance — hold and watch.
+        return Action.WAIT
 
     def _predict_jerry_target(self, world: World) -> Position:
         """Predict Jerry's future position using AVERAGE velocity over recent
