@@ -51,17 +51,40 @@ from src.env.world.world import WorldConfig
 from src.hunter.agent.behavior.baseline import ScriptedTom
 
 
+# ---- Tom opponent factory ----------------------------------------------
+
+def build_training_tom(tom_spec: str, seed: int):
+    """Build the Tom opponent a Jerry trains against.
+
+    Supported:
+      - "scripted":  ScriptedTom (BFS pathfinder) — the Phase 1-5 default.
+      - "conductor": ChemicalTom + Conductor (the two-brain hunter). Used
+                     to train a counter-Jerry against the Phase 6 hunter.
+
+    The opponent is FIXED during a Jerry training run (it does not learn).
+    This is single-sided training against a stationary hunter — the
+    de-risking step before full alternating co-evolution (Stage 2).
+    """
+    if tom_spec == "scripted":
+        return ScriptedTom(seed=seed)
+    if tom_spec == "conductor":
+        from src.hunter.agent.behavior.chemical_tom import ChemicalTom
+        from src.hunter.agent.conductor import Conductor
+        return ChemicalTom(conductor=Conductor(), seed=seed)
+    raise SystemExit(f"unknown --tom spec: {tom_spec!r} (use scripted|conductor)")
+
+
 # ---- env factory --------------------------------------------------------
 
-def make_env(seed: int, world_max_ticks: int, archetype: str):
+def make_env(seed: int, world_max_ticks: int, archetype: str, tom_spec: str):
     """Factory closure for SB3 vector envs. Each call returns a NEW env
-    configured for the given archetype.
+    configured for the given archetype, training against the given Tom.
     """
     def _init():
         env = JerryEnv(
             world_config=WorldConfig(max_ticks=world_max_ticks),
             reward_config=JerryRewardConfig.for_archetype(archetype),
-            tom_policy=ScriptedTom(seed=seed),
+            tom_policy=build_training_tom(tom_spec, seed),
         )
         env = Monitor(env)
         env.reset(seed=seed)
@@ -89,6 +112,7 @@ class EvalAgainstScriptedCallback(BaseCallback):
         eval_seed: int,
         log_path: Path,
         world_max_ticks: int,
+        tom_spec: str = "scripted",
         verbose: int = 1,
     ):
         super().__init__(verbose)
@@ -98,6 +122,7 @@ class EvalAgainstScriptedCallback(BaseCallback):
         self.eval_seed = eval_seed
         self.log_path = log_path
         self.world_max_ticks = world_max_ticks
+        self.tom_spec = tom_spec
         self._n_calls_since_eval = 0
 
     def _on_step(self) -> bool:
@@ -156,7 +181,7 @@ class EvalAgainstScriptedCallback(BaseCallback):
             env = JerryEnv(
                 world_config=WorldConfig(max_ticks=self.world_max_ticks),
                 reward_config=JerryRewardConfig.for_archetype(self.archetype),
-                tom_policy=ScriptedTom(seed=env_seed),
+                tom_policy=build_training_tom(self.tom_spec, env_seed),
             )
             obs, _ = env.reset(seed=env_seed)
             total_r = 0.0
@@ -193,8 +218,18 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     p.add_argument(
         "--run-name",
-        help="Override the default run name (default: jerry_<archetype>). "
+        help="Override the default run name (default: jerry_<archetype> or "
+             "jerry_<archetype>_vs_<tom> when --tom is not scripted). "
              "Useful for ablation runs with different hyperparams.",
+    )
+    p.add_argument(
+        "--tom",
+        default="scripted",
+        choices=["scripted", "conductor"],
+        help="Opponent Tom to train against. 'scripted' (default) is the "
+             "Phase 1-5 BFS hunter. 'conductor' is the Phase 6 two-brain "
+             "hunter — use this to train a counter-Jerry against the "
+             "Conductor (the de-risking step before full co-evolution).",
     )
     p.add_argument("--timesteps", type=int, default=1_500_000,
                    help="Total PPO env steps. Phase 5 default 1.5M matches "
@@ -223,7 +258,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 def main(argv: list[str] | None = None) -> None:
     args = parse_args(argv)
 
-    run_name = args.run_name or f"jerry_{args.archetype}"
+    # Default run name includes the opponent when it's not the default
+    # scripted Tom, so a counter-Jerry doesn't overwrite the baseline
+    # jerry_<archetype> snapshots.
+    if args.run_name:
+        run_name = args.run_name
+    elif args.tom == "scripted":
+        run_name = f"jerry_{args.archetype}"
+    else:
+        run_name = f"jerry_{args.archetype}_vs_{args.tom}"
 
     # Resolve paths
     project_root = Path(__file__).resolve().parents[1]
@@ -239,9 +282,9 @@ def main(argv: list[str] | None = None) -> None:
     config_dict["started_at"] = time.time()
     (logs_dir / "config.json").write_text(json.dumps(config_dict, indent=2))
 
-    # Vector env — every env uses the same archetype + a different seed
+    # Vector env — every env uses the same archetype + opponent + a different seed
     env_fns = [
-        make_env(args.seed + i, args.world_max_ticks, args.archetype)
+        make_env(args.seed + i, args.world_max_ticks, args.archetype, args.tom)
         for i in range(args.n_envs)
     ]
     if args.subproc:
@@ -279,10 +322,11 @@ def main(argv: list[str] | None = None) -> None:
         eval_seed=args.seed + 10_000,
         log_path=eval_log,
         world_max_ticks=eval_max_ticks,
+        tom_spec=args.tom,
     )
 
-    print(f"Training archetype {args.archetype!r} for {args.timesteps:,} steps "
-          f"across {args.n_envs} envs.")
+    print(f"Training archetype {args.archetype!r} vs Tom {args.tom!r} "
+          f"for {args.timesteps:,} steps across {args.n_envs} envs.")
     print(f"  Run name:     {run_name}")
     print(f"  TensorBoard:  tensorboard --logdir {logs_dir}")
     print(f"  Eval log:     {eval_log}")
