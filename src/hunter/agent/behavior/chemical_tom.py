@@ -41,6 +41,7 @@ from src.utils.types import ACTION_DELTAS, Action, Position
 
 if TYPE_CHECKING:
     from src.env.world.world import Grid
+    from src.hunter.agent.conductor.conductor import Conductor
     from src.hunter.agent.memory.l1 import L1Memory
     from src.hunter.agent.memory.l2_lookup import L2Lookup
     from src.persistence.sqlite.l2_store import L2Store
@@ -103,6 +104,7 @@ class ChemicalTom(ScriptedTom):
         l1: "L1Memory | None" = None,
         l2_lookup: "L2Lookup | None" = None,
         l2_store: "L2Store | None" = None,
+        conductor: "Conductor | None" = None,
         seed: int | None = None,
     ):
         super().__init__(config=config, seed=seed)
@@ -130,6 +132,21 @@ class ChemicalTom(ScriptedTom):
         self.l2_lookup: "L2Lookup | None" = l2_lookup
         self.l2_store: "L2Store | None" = l2_store
 
+        # Phase 6c — the Conductor (director brain). Optional. When None,
+        # ChemicalTom behaves EXACTLY as Phase 2-5: targeting uses Tom's
+        # own per-encounter memory (last_seen_jerry / last_noise). When
+        # attached, the strategic targeting decision routes through the
+        # Conductor's belief instead — a unified, decaying, manipulable
+        # belief that REPLACES Tom's private memory for the purpose of
+        # answering "where do I think Jerry is?".
+        #
+        # Per ADR-013 this is how BFS-as-targeting gets replaced: Tom no
+        # longer pathfinds toward his own freshly-remembered Jerry sightings;
+        # he pathfinds toward the Conductor's (lossier, foolable) belief.
+        # Chemistry modulation, prediction, and catch logic all stay — only
+        # the SOURCE of the target changes.
+        self.conductor: "Conductor | None" = conductor
+
         # Tracking for prediction: last two Jerry positions Tom has seen
         self._jerry_position_history: deque[Position] = deque(maxlen=3)
 
@@ -153,6 +170,9 @@ class ChemicalTom(ScriptedTom):
         # If L1 is attached, clear its episode state too.
         if self.l1 is not None:
             self.l1.reset()
+        # If a Conductor is attached, clear its belief for the new episode.
+        if self.conductor is not None:
+            self.conductor.reset()
 
     def warm_start_for_episode(
         self,
@@ -274,8 +294,19 @@ class ChemicalTom(ScriptedTom):
             if not self._jerry_position_history or self._jerry_position_history[-1] != jp:
                 self._jerry_position_history.append(jp)
 
-        # 3. Update memory from current perceptions
-        self._update_memory(world)
+        # 3. Update memory from current perceptions.
+        #    Without a Conductor: Tom uses his own direct perception
+        #    (the Phase 2-5 path). With a Conductor: the Conductor observes
+        #    the world and Tom's memory fields are populated FROM the
+        #    Conductor's belief instead — a unified, decaying, foolable
+        #    belief replacing Tom's private binary memory. Downstream logic
+        #    (state selection, prediction, action) is identical either way;
+        #    only the SOURCE of last_seen_jerry / last_noise changes.
+        if self.conductor is not None:
+            self.conductor.observe(world)
+            self._update_memory_from_conductor(world)
+        else:
+            self._update_memory(world)
 
         # 4. Select state with chemistry-modulated thresholds
         self.state = self._select_state_chemical(world)
@@ -379,6 +410,70 @@ class ChemicalTom(ScriptedTom):
             return TomState.SEARCH
 
         return TomState.PATROL
+
+    # ---- override _update_memory to use modulated noise threshold ----
+
+    def _update_memory_from_conductor(self, world: World) -> None:
+        """Phase 6c: populate Tom's memory fields from the Conductor's belief
+        instead of from Tom's direct perception.
+
+        The Conductor has already observed the world this tick (sightings,
+        noises, scent → belief, with decay). Here we translate the belief's
+        live suspicions into the SAME memory fields the downstream logic
+        reads (last_seen_jerry / last_noise), so state selection, prediction,
+        and action choice work unchanged.
+
+        Mapping:
+          - strongest SIGHTING suspicion → last_seen_jerry / last_seen_tick
+          - strongest NOISE   suspicion → last_noise      / last_noise_tick
+          - SCENT suspicions are NOT mapped here; scent is read live by
+            _select_state_chemical via world._observe_tom(), preserving the
+            existing SEARCH-state path.
+
+        The crucial difference from _update_memory: these fields now reflect
+        a DECAYING, FOOLABLE belief. A false noise creates a real NOISE
+        suspicion Tom will chase; a sighting fades continuously rather than
+        being remembered crisply until a hard timeout. This is the
+        "weakening" ADR-013 calls for — Tom hunts from belief, not from
+        perfect private memory.
+
+        We still update _jerry_position_history and first-sight tracking
+        from genuine live visibility (handled in __call__), because those
+        feed prediction and episode stats, not strategic targeting.
+        """
+        from src.hunter.agent.conductor.belief import SuspicionType
+
+        tick = world.tick_count
+        now_live = self.belief_live_sources(world)
+
+        # Find the strongest live suspicion of each relevant type.
+        best_sighting = None
+        best_noise = None
+        for src, conf in now_live:
+            if src.type == SuspicionType.SIGHTING and best_sighting is None:
+                best_sighting = (src, conf)
+            elif src.type == SuspicionType.NOISE and best_noise is None:
+                best_noise = (src, conf)
+            if best_sighting is not None and best_noise is not None:
+                break
+
+        # SIGHTING suspicion → Tom's "last seen Jerry" memory.
+        if best_sighting is not None:
+            self.last_seen_jerry = best_sighting[0].position
+            self.last_seen_tick = tick
+
+        # NOISE suspicion → Tom's "last noise" memory.
+        if best_noise is not None:
+            self.last_noise = best_noise[0].position
+            self.last_noise_tick = tick
+
+    def belief_live_sources(self, world: World):
+        """Convenience accessor: the Conductor's live suspicion sources this
+        tick, strongest first. Empty list if no Conductor attached.
+        """
+        if self.conductor is None:
+            return []
+        return self.conductor.belief.live_sources(world.tick_count)
 
     # ---- override _update_memory to use modulated noise threshold ----
 
