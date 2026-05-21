@@ -174,9 +174,13 @@ def test_anchor_expires_after_window():
     assert cond.anchor_active is False
 
 
-def test_anchor_expires_when_run_down():
-    """The anchor expires when Tom reaches the anchor tile (runs it down)."""
-    cfg = ConductorConfig(hold_on_los_break=True, hold_window_ticks=30)
+def test_anchor_occupies_then_clears_when_run_down():
+    """When Tom reaches the anchor, he OCCUPIES it for hold_occupy_ticks
+    (camping the spot to flush Jerry out) before the anchor clears, rather
+    than leaving immediately.
+    """
+    cfg = ConductorConfig(hold_on_los_break=True, hold_window_ticks=30,
+                          hold_occupy_ticks=4)
     cond = Conductor(config=cfg)
     from tests.integration.test_conductor_observe import _FakeWorld
 
@@ -185,8 +189,17 @@ def test_anchor_expires_when_run_down():
     assert cond.anchor_active is True
     assert cond._anchor_pos == Position(3, 0)
 
-    # Tom advances to the anchor tile → run-down → anchor clears.
+    # Tom reaches the anchor tile → starts occupying (does NOT clear yet).
     cond.observe(_FakeWorld(tick=2, tom=Position(3, 0), jerry=Position(3, 0), can_see=False))
+    assert cond.anchor_active is True, "anchor should persist while occupying"
+
+    # Tom camps the spot; anchor stays through the occupy window...
+    cond.observe(_FakeWorld(tick=3, tom=Position(3, 0), jerry=Position(3, 0), can_see=False))
+    assert cond.anchor_active is True
+
+    # ...then clears once the occupy dwell (4 ticks from tick 2 => tick 6) passes.
+    for t in range(4, 8):
+        cond.observe(_FakeWorld(tick=t, tom=Position(3, 0), jerry=Position(3, 0), can_see=False))
     assert cond.anchor_active is False
     assert cond._anchor_pos is None
 

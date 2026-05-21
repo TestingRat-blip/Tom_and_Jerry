@@ -76,6 +76,12 @@ class ConductorConfig:
     hold_window_ticks: int = 15
     # Confidence the anchor is re-stamped to each tick (high = strong pull).
     hold_anchor_confidence: float = 1.0
+    # Occupy-dwell: once Tom REACHES the anchor tile, hold the anchor (keep
+    # him on the spot) for this many ticks before clearing — denying the
+    # cover and forcing Jerry to either stay trapped or break into the open.
+    # "Runs him down to his square AND camps it." 0 = leave immediately
+    # (run-through). >0 = occupy and flush.
+    hold_occupy_ticks: int = 6
 
 
 class Conductor:
@@ -111,6 +117,8 @@ class Conductor:
         self._last_seen_pos: Position | None = None
         self._anchor_pos: Position | None = None
         self._anchor_until_tick: int = -1
+        # Occupy-dwell: once Tom reaches the anchor, hold it until this tick.
+        self._anchor_occupy_until: int = -1
         # Exposed for inspection / replay overlay.
         self.anchor_active: bool = False
 
@@ -136,6 +144,7 @@ class Conductor:
         self._last_seen_pos = None
         self._anchor_pos = None
         self._anchor_until_tick = -1
+        self._anchor_occupy_until = -1
         self.anchor_active = False
 
     # ---- perception ---------------------------------------------------
@@ -223,23 +232,37 @@ class Conductor:
         if just_lost and self._last_seen_pos is not None:
             self._anchor_pos = self._last_seen_pos
             self._anchor_until_tick = now + self.config.hold_window_ticks
+            self._anchor_occupy_until = -1  # not yet reached
 
-        # Maintain an active, unexpired anchor.
-        if self._anchor_pos is not None and now <= self._anchor_until_tick:
-            # Expire if Tom has reached (run down) the anchor tile.
-            if world.tom.position.manhattan(self._anchor_pos) <= 1:
+        # Maintain an active anchor.
+        if self._anchor_pos is not None:
+            reached = world.tom.position.manhattan(self._anchor_pos) <= 1
+
+            # If Tom has reached the anchor, start (or continue) the occupy
+            # dwell — camp the spot to flush Jerry out instead of leaving.
+            if reached and self._anchor_occupy_until < 0:
+                self._anchor_occupy_until = now + self.config.hold_occupy_ticks
+
+            occupying = self._anchor_occupy_until >= 0
+            window_ok = now <= self._anchor_until_tick
+            occupy_ok = now <= self._anchor_occupy_until
+
+            # Anchor stays alive while EITHER the run-down window is open
+            # (still travelling to it) OR Tom is occupying it within dwell.
+            if (window_ok and not occupying) or (occupying and occupy_ok):
+                # Re-stamp a high-confidence sighting at the anchor so Tom
+                # keeps pursuing / camping it. add_sighting merges with the
+                # existing same-type same-tile suspicion, refreshing it.
+                self.belief.add_sighting(self._anchor_pos, now)
+                self.anchor_active = True
+            else:
+                # Run-down window expired without reaching, or occupy dwell
+                # finished — give up the anchor.
                 self._anchor_pos = None
                 self._anchor_until_tick = -1
+                self._anchor_occupy_until = -1
                 self.anchor_active = False
-                return
-            # Re-stamp a high-confidence sighting at the anchor so Tom keeps
-            # pursuing it. add_sighting merges with the existing one (same
-            # type, same tile) — refreshing its age and confidence.
-            self.belief.add_sighting(self._anchor_pos, now)
-            self.anchor_active = True
         else:
-            # Window expired.
-            self._anchor_pos = None
             self.anchor_active = False
 
     def _observe_scent(self, world: World, now: int) -> None:

@@ -598,6 +598,19 @@ class ChemicalTom(ScriptedTom):
             return self._step_toward(world.tom.position, target, world)
 
         if self.state == TomState.PURSUE:
+            # Component 3: when the run-down anchor is active, pursue the
+            # anchor tile DIRECTLY and ignore prediction — even if Jerry
+            # flickers into view. The cover-dance works partly because Jerry
+            # oscillates in and out of LOS; each one-tick sighting would
+            # otherwise yank Tom into _predict_jerry_target (which
+            # extrapolates Jerry's oscillation and OVERSHOOTS the vanish
+            # point). The anchor is a deliberate "deny this spot" commitment
+            # that a one-tick flicker must not interrupt.
+            anchor_active = getattr(self.conductor, "anchor_active", False)
+            anchor_pos = getattr(self.conductor, "_anchor_pos", None) if anchor_active else None
+            if anchor_pos is not None:
+                return self._step_toward(world.tom.position, anchor_pos, world)
+
             if world._tom_can_see_jerry():
                 target = self._predict_jerry_target(world)
             elif self.last_seen_jerry is not None:
