@@ -523,6 +523,16 @@ class ChemicalTom(ScriptedTom):
             cortisol=self.chemistry.cortisol,
             config=self.mode_config,
         )
+
+        # Component 3: when the run-down anchor is active, Tom must CLOSE on
+        # the vanish point and occupy it ("run him down to his square"), not
+        # STALK it at a distance. The anchor re-stamps a high-confidence
+        # SIGHTING, which would otherwise suggest STALK (hold back) — exactly
+        # the wrong behavior, since there's nothing to watch, only a spot to
+        # deny. Force RUSH while anchored.
+        if getattr(self.conductor, "anchor_active", False):
+            final = HuntMode.RUSH
+
         self.current_mode = final
         self.suggested_mode = suggested
         self.mode_overridden = overridden

@@ -230,3 +230,36 @@ def test_hold_does_not_break_normal_catching():
         if not world.jerry.alive:
             caught += 1
     assert caught >= 3, f"hold-on Tom only caught {caught}/5 passive Jerrys"
+
+
+def test_tom_rushes_not_stalks_while_anchored():
+    """Component 3 fix: while the run-down anchor is active, Tom must be in
+    RUSH mode (close on the vanish point and occupy it), NOT STALK (hold at
+    distance). The anchor re-stamps a high-confidence sighting which would
+    otherwise suggest STALK — the wrong behavior for a run-down.
+    """
+    from src.hunter.agent.conductor import HuntMode
+
+    cfg = ConductorConfig(hold_on_los_break=True, hold_window_ticks=15)
+    saw_anchor = False
+    stalk_while_anchored = 0
+    for seed in range(30):
+        world = World(WorldConfig(max_ticks=200), seed=seed)
+        world.reset()
+        cond = Conductor(config=cfg)
+        tom = ChemicalTom(conductor=cond, seed=seed)
+        tom.reset()
+        rng = random.Random(seed + 11)
+        for _ in range(200):
+            a = tom(world)
+            if cond.anchor_active:
+                saw_anchor = True
+                if tom.current_mode == HuntMode.STALK:
+                    stalk_while_anchored += 1
+            ja = rng.randint(0, 4)
+            world.step(tom_action=a, jerry_action=ja)
+            if not world.jerry.alive:
+                break
+    assert saw_anchor, "no anchor activated across 30 seeds — can't test mode"
+    assert stalk_while_anchored == 0, \
+        f"Tom was STALKing on {stalk_while_anchored} anchored ticks — should RUSH"
