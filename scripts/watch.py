@@ -88,6 +88,16 @@ def _make_tom_policy(spec: str, seed: int):
         from src.hunter.agent.conductor import Conductor
         tom = ChemicalTom(conductor=Conductor(), seed=seed)
         return (tom, "conductor")
+    if spec == "conductor-holddown":
+        # Component 3: Conductor with hold-on-LOS-break / run-down FORCED
+        # ON. This is the cheap-experiment hunter — used to test whether the
+        # run-down behavior counters the cover-dance Jerry. Normally this
+        # behavior is deployed by memory, not always-on.
+        from src.hunter.agent.behavior.chemical_tom import ChemicalTom
+        from src.hunter.agent.conductor import Conductor, ConductorConfig
+        cfg = ConductorConfig(hold_on_los_break=True)
+        tom = ChemicalTom(conductor=Conductor(config=cfg), seed=seed)
+        return (tom, "conductor-holddown")
     if spec == "chemical-l1":
         from src.hunter.agent.behavior.chemical_tom import ChemicalTom
         from src.hunter.agent.memory.l1 import L1Memory

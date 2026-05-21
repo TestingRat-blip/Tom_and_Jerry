@@ -67,7 +67,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--tom-policies",
         nargs="+",
         default=["scripted"],
-        choices=["scripted", "chemical", "chemical-l2", "conductor", "conductor-l2"],
+        choices=["scripted", "chemical", "chemical-l2", "conductor", "conductor-l2", "conductor-holddown"],
         help="Which Tom variants to evaluate against. Multiple => "
              "cross-product of (archetype, tom) cells. Default: scripted only.",
     )
@@ -185,6 +185,17 @@ def make_tom_factory(spec: str, seed: int):
         def factory(s: int):
             return ChemicalTom(conductor=Conductor(), seed=s)
         return factory, "conductor"
+
+    if spec == "conductor-holddown":
+        # Component 3: Conductor with hold-on-LOS-break / run-down forced on.
+        # The cheap-experiment hunter for testing the cover-dance counter.
+        from src.hunter.agent.behavior.chemical_tom import ChemicalTom
+        from src.hunter.agent.conductor import Conductor, ConductorConfig
+
+        def factory(s: int):
+            cfg = ConductorConfig(hold_on_los_break=True)
+            return ChemicalTom(conductor=Conductor(config=cfg), seed=s)
+        return factory, "conductor-holddown"
 
     if spec == "conductor-l2":
         from src.hunter.agent.behavior.chemical_tom import ChemicalTom

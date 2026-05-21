@@ -60,6 +60,23 @@ class ConductorConfig:
     # nearest walkable tile for a patrol target.
     patrol_snap_radius: int = 6
 
+    # --- Component 3: hold-on-LOS-break / run-down (memory-adaptation) ---
+    # When enabled, if Tom LOSES line of sight to a Jerry he was actively
+    # seeing, the Conductor ANCHORS a high-confidence sighting suspicion at
+    # the last-seen tile for a window of ticks, re-stamping it each tick so
+    # it does not decay. Tom keeps pursuing toward where Jerry vanished
+    # ("runs him down to his square") instead of releasing pressure and
+    # re-patrolling — the counter to the cover-dance exploit.
+    #
+    # Disabled by default: this behavior is DEPLOYED by memory
+    # (a StrategicStance from L2), not always-on. For the cheap validation
+    # experiment we force it on via hold_on_los_break=True.
+    hold_on_los_break: bool = False
+    # How many ticks to keep the anchor alive after LOS breaks.
+    hold_window_ticks: int = 15
+    # Confidence the anchor is re-stamped to each tick (high = strong pull).
+    hold_anchor_confidence: float = 1.0
+
 
 class Conductor:
     """Director brain. Observe-only in Phase 6b.
@@ -86,6 +103,17 @@ class Conductor:
         # because the Conductor doesn't know grid dimensions at construction.
         self._sectors: SectorMap | None = None
 
+        # Component 3: hold-on-LOS-break tracking.
+        # _was_seeing_jerry: did Tom have LOS last tick?
+        # _last_seen_pos: where Jerry was when last seen.
+        # _anchor_pos / _anchor_until_tick: active anchor (None = inactive).
+        self._was_seeing_jerry: bool = False
+        self._last_seen_pos: Position | None = None
+        self._anchor_pos: Position | None = None
+        self._anchor_until_tick: int = -1
+        # Exposed for inspection / replay overlay.
+        self.anchor_active: bool = False
+
     def _ensure_sectors(self, world: World) -> SectorMap:
         """Build the sector map on first use (we need grid dimensions)."""
         if self._sectors is None:
@@ -103,6 +131,12 @@ class Conductor:
         self.last_suggested_type = None
         if self._sectors is not None:
             self._sectors.reset()
+        # Component 3 state
+        self._was_seeing_jerry = False
+        self._last_seen_pos = None
+        self._anchor_pos = None
+        self._anchor_until_tick = -1
+        self.anchor_active = False
 
     # ---- perception ---------------------------------------------------
 
@@ -121,8 +155,22 @@ class Conductor:
         # This is the one place we read Jerry's position, and it's gated
         # exactly like ScriptedTom's perception — seeing is a sensor, not
         # ground-truth omniscience.
-        if world._tom_can_see_jerry():
+        seeing = world._tom_can_see_jerry()
+        if seeing:
             self.belief.add_sighting(world.jerry.position, now)
+            self._last_seen_pos = world.jerry.position
+
+        # --- Component 3: hold-on-LOS-break / run-down ---
+        # When enabled, and Tom JUST lost LOS to a Jerry he was seeing,
+        # plant an anchor at the last-seen tile and keep re-stamping a
+        # high-confidence sighting there for hold_window_ticks. This makes
+        # Tom keep pursuing where Jerry vanished instead of forgetting —
+        # the counter to the cover-dance. Memory deploys this (via the
+        # hold_on_los_break flag); for the validation experiment it's
+        # forced on.
+        if self.config.hold_on_los_break:
+            self._update_los_break_anchor(world, now, seeing)
+        self._was_seeing_jerry = seeing
 
         # --- NOISE: from events Tom did not himself cause ---
         events = getattr(world, "_events_this_tick", [])
@@ -147,6 +195,52 @@ class Conductor:
 
         # --- decay / prune ---
         self.belief.tick(now)
+
+    def _update_los_break_anchor(self, world: World, now: int, seeing: bool) -> None:
+        """Component 3: maintain a 'run-down' anchor when Tom loses LOS.
+
+        Logic:
+          - If Tom currently SEES Jerry, no anchor needed (real sighting
+            dominates). Clear any active anchor.
+          - If Tom just LOST LOS this tick (saw last tick, not now), start
+            an anchor at the last-seen tile, alive for hold_window_ticks.
+          - While an anchor is active and unexpired, re-stamp a high-
+            confidence sighting at the anchor tile each tick so Tom keeps
+            pursuing it (it would otherwise decay and release pressure).
+          - Expire the anchor when its window passes OR when Tom reaches
+            the anchor tile (he's run it down — nothing there, resume normal
+            hunting / patrol).
+        """
+        if seeing:
+            # Real sighting active — drop any anchor.
+            self._anchor_pos = None
+            self._anchor_until_tick = -1
+            self.anchor_active = False
+            return
+
+        # Detect the moment LOS breaks: saw last tick, not this tick.
+        just_lost = self._was_seeing_jerry and not seeing
+        if just_lost and self._last_seen_pos is not None:
+            self._anchor_pos = self._last_seen_pos
+            self._anchor_until_tick = now + self.config.hold_window_ticks
+
+        # Maintain an active, unexpired anchor.
+        if self._anchor_pos is not None and now <= self._anchor_until_tick:
+            # Expire if Tom has reached (run down) the anchor tile.
+            if world.tom.position.manhattan(self._anchor_pos) <= 1:
+                self._anchor_pos = None
+                self._anchor_until_tick = -1
+                self.anchor_active = False
+                return
+            # Re-stamp a high-confidence sighting at the anchor so Tom keeps
+            # pursuing it. add_sighting merges with the existing one (same
+            # type, same tile) — refreshing its age and confidence.
+            self.belief.add_sighting(self._anchor_pos, now)
+            self.anchor_active = True
+        else:
+            # Window expired.
+            self._anchor_pos = None
+            self.anchor_active = False
 
     def _observe_scent(self, world: World, now: int) -> None:
         """Read the scent gradient at Tom's position and, if strong enough,
