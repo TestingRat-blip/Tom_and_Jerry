@@ -21,6 +21,38 @@ from dataclasses import dataclass, field
 from src.persistence.sqlite.l2_store import EpisodeSummary, L2Store
 
 
+# ---- behavioral stance (memory-driven adaptation) ---------------------
+
+@dataclass
+class StrategicStance:
+    """What memory says about HOW to hunt this Jerry on this map.
+
+    Derived from the behavioral signatures of past episodes (los_break_count
+    etc.). The Conductor applies this at episode start to deploy counters
+    like the hold-on-LOS-break run-down — but ONLY when memory says this
+    prey warrants it, rather than always-on.
+    """
+    # Episodes this stance was aggregated from (0 = no memory → neutral).
+    episode_count: int = 0
+    # Mean LOS-breaks per past episode against this Jerry/map.
+    mean_los_breaks: float = 0.0
+    # Whether to deploy the hold-on-LOS-break run-down this episode.
+    deploy_hold_on_los_break: bool = False
+    # Top cover spots Jerry vanished into, weighted (x, y) -> weight.
+    los_break_hotspots: dict[tuple[int, int], float] = field(default_factory=dict)
+
+    @property
+    def is_neutral(self) -> bool:
+        """True when memory has nothing to say (no behavioral history)."""
+        return self.episode_count == 0
+
+
+# Threshold: mean LOS-breaks per episode above which we deploy the run-down.
+# A cover-dancer racks up many LOS-breaks; a normal evader a handful. Tuned
+# conservatively so the run-down only deploys against genuine LOS-breakers.
+DEFAULT_LOS_BREAK_DEPLOY_THRESHOLD = 5.0
+
+
 # ---- defaults: weights and bounds -------------------------------------
 
 # Per-episode age decay (multiplicative). 0.95 → episode-10-ago weighs ~0.6,
@@ -147,6 +179,52 @@ class L2Lookup:
         warm.false_noise = {k: min(cap, v) for k, v in false_noise.items()}
 
         return warm
+
+    def behavioral_stance(
+        self,
+        map_fp_fine: str,
+        map_fp_coarse: str,
+        jerry_fp: str,
+        deploy_threshold: float = DEFAULT_LOS_BREAK_DEPLOY_THRESHOLD,
+    ) -> StrategicStance:
+        """Aggregate past behavioral signatures into a StrategicStance.
+
+        Reads los_break_count / los_break_hotspots from past episodes (same
+        fine→coarse cascade as build_warm_start) and decides whether to
+        deploy the hold-on-LOS-break run-down: if this Jerry historically
+        breaks LOS often (mean above deploy_threshold), deploy it. This is
+        what makes the run-down SELECTIVE — memory-deployed against genuine
+        cover-dancers, not always-on.
+        """
+        cfg = self.config
+        fine = self.store.query_fine(
+            map_fp_fine=map_fp_fine, jerry_fp=jerry_fp, limit=cfg.fine_limit)
+        coarse = self.store.query_coarse(
+            map_fp_coarse=map_fp_coarse, jerry_fp=jerry_fp,
+            limit=cfg.coarse_limit, exclude_fine=map_fp_fine)
+        summaries = fine + coarse
+
+        if not summaries:
+            return StrategicStance()  # neutral — no memory
+
+        total_breaks = sum(s.los_break_count for s in summaries)
+        mean_breaks = total_breaks / len(summaries)
+
+        # Aggregate hotspots, weighting fine over coarse.
+        hotspots: defaultdict[tuple[int, int], float] = defaultdict(float)
+        for s in fine:
+            for x, y, c in s.los_break_hotspots:
+                hotspots[(x, y)] += c * cfg.fine_weight
+        for s in coarse:
+            for x, y, c in s.los_break_hotspots:
+                hotspots[(x, y)] += c * cfg.coarse_weight
+
+        return StrategicStance(
+            episode_count=len(summaries),
+            mean_los_breaks=mean_breaks,
+            deploy_hold_on_los_break=mean_breaks >= deploy_threshold,
+            los_break_hotspots=dict(hotspots),
+        )
 
     @staticmethod
     def _fold_summaries(

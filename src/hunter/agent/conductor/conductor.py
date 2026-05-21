@@ -121,6 +121,11 @@ class Conductor:
         self._anchor_occupy_until: int = -1
         # Exposed for inspection / replay overlay.
         self.anchor_active: bool = False
+        # Runtime override of config.hold_on_los_break, set by memory
+        # (warm-start) per-episode. None = use config value; True/False =
+        # override. Lets memory deploy/stand-down the run-down without
+        # mutating the frozen config.
+        self.runtime_hold_on_los_break: bool | None = None
 
     def _ensure_sectors(self, world: World) -> SectorMap:
         """Build the sector map on first use (we need grid dimensions)."""
@@ -146,6 +151,11 @@ class Conductor:
         self._anchor_until_tick = -1
         self._anchor_occupy_until = -1
         self.anchor_active = False
+        # NOTE: runtime_hold_on_los_break is NOT reset here — it's set by
+        # warm-start AFTER reset(), and reset shouldn't clobber a value the
+        # caller may set immediately after. Callers that want a clean slate
+        # set it explicitly (or it persists from the prior warm-start, which
+        # is fine since warm-start re-sets it each episode).
 
     # ---- perception ---------------------------------------------------
 
@@ -177,7 +187,7 @@ class Conductor:
         # the counter to the cover-dance. Memory deploys this (via the
         # hold_on_los_break flag); for the validation experiment it's
         # forced on.
-        if self.config.hold_on_los_break:
+        if self._hold_on_los_break_active():
             self._update_los_break_anchor(world, now, seeing)
         self._was_seeing_jerry = seeing
 
@@ -204,6 +214,13 @@ class Conductor:
 
         # --- decay / prune ---
         self.belief.tick(now)
+
+    def _hold_on_los_break_active(self) -> bool:
+        """Whether the run-down behavior is active: runtime override (set by
+        memory) wins over the config default."""
+        if self.runtime_hold_on_los_break is not None:
+            return self.runtime_hold_on_los_break
+        return self.config.hold_on_los_break
 
     def _update_los_break_anchor(self, world: World, now: int, seeing: bool) -> None:
         """Component 3: maintain a 'run-down' anchor when Tom loses LOS.

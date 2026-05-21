@@ -63,7 +63,7 @@ def test_client_creates_db_file(tmp_path: Path):
 
 
 def test_client_applies_schema_version(client):
-    assert client.schema_version == 1
+    assert client.schema_version == 2
 
 
 def test_client_schema_is_idempotent(tmp_path: Path):
@@ -72,7 +72,7 @@ def test_client_schema_is_idempotent(tmp_path: Path):
     c1 = SQLiteClient(SQLiteConfig(db_path=db_path))
     c1.close()
     c2 = SQLiteClient(SQLiteConfig(db_path=db_path))
-    assert c2.schema_version == 1
+    assert c2.schema_version == 2
     c2.close()
 
 

@@ -49,6 +49,12 @@ class EpisodeSummary:
     false_noise_top: list[TileCount] = field(default_factory=list)
     total_noise_events: int = 0
     verified_noise_count: int = 0
+    # Behavioral signatures (schema v2) — HOW Jerry behaved, for memory-
+    # driven adaptation. los_break_count is the cover-dance signal.
+    los_break_count: int = 0
+    los_break_hotspots: list[TileCount] = field(default_factory=list)
+    time_in_cover_fraction: float = 0.0
+    oscillation_score: float = 0.0
     notes: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self):
@@ -82,8 +88,11 @@ class L2Store:
                 tom_label, outcome, total_ticks, total_jerry_reward,
                 ticks_to_first_sight,
                 heatmap_top_json, lockers_json, false_noise_top_json,
-                total_noise_events, verified_noise_count, notes_json
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                total_noise_events, verified_noise_count,
+                los_break_count, los_break_hotspots_json,
+                time_in_cover_fraction, oscillation_score,
+                notes_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 summary.episode_id, summary.created_at,
@@ -95,6 +104,9 @@ class L2Store:
                 json.dumps([list(t) for t in summary.lockers]),
                 json.dumps([list(t) for t in summary.false_noise_top]),
                 summary.total_noise_events, summary.verified_noise_count,
+                summary.los_break_count,
+                json.dumps([list(t) for t in summary.los_break_hotspots]),
+                summary.time_in_cover_fraction, summary.oscillation_score,
                 json.dumps(summary.notes),
             ),
         )
@@ -240,5 +252,22 @@ def _row_to_summary(row) -> EpisodeSummary:
         false_noise_top=[tuple(t) for t in json.loads(row["false_noise_top_json"])],
         total_noise_events=int(row["total_noise_events"]),
         verified_noise_count=int(row["verified_noise_count"]),
+        los_break_count=int(_row_get(row, "los_break_count", 0)),
+        los_break_hotspots=[
+            tuple(t) for t in json.loads(_row_get(row, "los_break_hotspots_json", "[]"))
+        ],
+        time_in_cover_fraction=float(_row_get(row, "time_in_cover_fraction", 0.0)),
+        oscillation_score=float(_row_get(row, "oscillation_score", 0.0)),
         notes=json.loads(row["notes_json"]),
     )
+
+
+def _row_get(row, key: str, default):
+    """Defensive Row accessor: returns default if the column is absent.
+    Lets the reader tolerate rows from a DB that hasn't been migrated to v2
+    yet (shouldn't happen in normal flow, but safe)."""
+    try:
+        val = row[key]
+    except (IndexError, KeyError):
+        return default
+    return val if val is not None else default

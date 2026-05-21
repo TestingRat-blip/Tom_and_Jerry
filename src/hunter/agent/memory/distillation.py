@@ -51,6 +51,10 @@ def distill_l1_to_summary(
     heatmap_top_n: int = DEFAULT_HEATMAP_TOP_N,
     false_noise_top_n: int = DEFAULT_FALSE_NOISE_TOP_N,
     notes: dict | None = None,
+    los_break_count: int = 0,
+    los_break_hotspots: list[tuple[int, int, int]] | None = None,
+    time_in_cover_fraction: float = 0.0,
+    oscillation_score: float = 0.0,
 ) -> EpisodeSummary:
     """Build an EpisodeSummary from the current L1 state.
 
@@ -106,6 +110,10 @@ def distill_l1_to_summary(
         false_noise_top=false_noise_top,
         total_noise_events=total_noise_events,
         verified_noise_count=verified_noise_count,
+        los_break_count=los_break_count,
+        los_break_hotspots=los_break_hotspots or [],
+        time_in_cover_fraction=time_in_cover_fraction,
+        oscillation_score=oscillation_score,
         notes=notes or {},
     )
 

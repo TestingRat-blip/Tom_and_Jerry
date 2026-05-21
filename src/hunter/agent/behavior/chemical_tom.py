@@ -162,6 +162,9 @@ class ChemicalTom(ScriptedTom):
         self.current_mode: HuntMode = HuntMode.PATROL
         self.suggested_mode: HuntMode = HuntMode.PATROL
         self.mode_overridden: bool = False
+        # Memory-driven stance applied at warm-start (Component 2). None
+        # until warm_start_for_episode runs.
+        self.last_stance = None
 
         # Tracking for prediction: last two Jerry positions Tom has seen
         self._jerry_position_history: deque[Position] = deque(maxlen=3)
@@ -175,6 +178,19 @@ class ChemicalTom(ScriptedTom):
         # None means Tom never sighted Jerry this episode.
         self._ticks_to_first_sight: int | None = None
 
+        # Memory-adaptation tracking (behavioral signatures for L2):
+        #   _los_break_count: times Tom lost LOS to Jerry this episode
+        #   _los_break_tiles: where Jerry was when LOS broke (Counter of (x,y))
+        #   _was_seeing_jerry_episode: prev-tick visibility (for break detect)
+        #   _cover_ticks / _total_jerry_ticks: for time_in_cover_fraction
+        # These are OBSERVABLE signals (Tom had sight, then didn't) — no
+        # access to Jerry's hidden state, so they work for human Jerrys too.
+        from collections import Counter
+        self._los_break_count: int = 0
+        self._los_break_tiles: "Counter" = Counter()
+        self._was_seeing_jerry_episode: bool = False
+        self._last_seen_jerry_tile: Position | None = None
+
     def reset(self) -> None:
         super().reset()
         self.drive_system.reset(self.drives)
@@ -183,6 +199,12 @@ class ChemicalTom(ScriptedTom):
         self.last_predicted_jerry_pos = None
         self.last_prediction_steps = 0
         self._ticks_to_first_sight = None
+        # Reset behavioral-signature tracking
+        from collections import Counter
+        self._los_break_count = 0
+        self._los_break_tiles = Counter()
+        self._was_seeing_jerry_episode = False
+        self._last_seen_jerry_tile = None
         # If L1 is attached, clear its episode state too.
         if self.l1 is not None:
             self.l1.reset()
@@ -222,16 +244,35 @@ class ChemicalTom(ScriptedTom):
         )
         fine_fp, coarse_fp = fingerprint_map(grid)
         jerry_fp = fingerprint_jerry(jerry_policy, label=jerry_label)
-        # Query L2 + build the warm-start
+        # Query L2 + build the warm-start (spatial priors → L1)
         warm = self.l2_lookup.build_warm_start(
             map_fp_fine=fine_fp,
             map_fp_coarse=coarse_fp,
             jerry_fp=jerry_fp,
         )
-        if warm.is_empty:
-            return False
-        self.l1.apply_warm_start(warm)
-        return True
+        applied = False
+        if not warm.is_empty:
+            self.l1.apply_warm_start(warm)
+            applied = True
+
+        # Memory-driven adaptation (Component 2): query the behavioral
+        # stance and deploy counters on the Conductor. This is what makes
+        # the hold-on-LOS-break run-down SELECTIVE — it turns on only when
+        # memory says this Jerry is a cover-dancer (high historical
+        # LOS-break rate), instead of always-on.
+        if self.conductor is not None:
+            stance = self.l2_lookup.behavioral_stance(
+                map_fp_fine=fine_fp,
+                map_fp_coarse=coarse_fp,
+                jerry_fp=jerry_fp,
+            )
+            self.last_stance = stance
+            if not stance.is_neutral:
+                # Deploy (or stand down) the run-down per memory.
+                self.conductor.runtime_hold_on_los_break = stance.deploy_hold_on_los_break
+                applied = True
+
+        return applied
 
     def distill_at_episode_end(
         self,
@@ -255,6 +296,10 @@ class ChemicalTom(ScriptedTom):
         if self.l1 is None or self.l2_store is None:
             return False
         from src.hunter.agent.memory.distillation import distill_l1_to_summary
+        # Top LOS-break hotspots (the cover spots Jerry vanished into).
+        los_break_hotspots = [
+            (x, y, c) for (x, y), c in self._los_break_tiles.most_common(10)
+        ]
         summary = distill_l1_to_summary(
             l1=self.l1,
             grid=grid,
@@ -266,6 +311,8 @@ class ChemicalTom(ScriptedTom):
             tom_label=tom_label,
             jerry_label=jerry_label,
             notes=notes,
+            los_break_count=self._los_break_count,
+            los_break_hotspots=los_break_hotspots,
         )
         self.l2_store.insert(summary)
         return True
@@ -281,6 +328,21 @@ class ChemicalTom(ScriptedTom):
         # Track first sight time for the episode summary
         if self._ticks_to_first_sight is None and world._tom_can_see_jerry():
             self._ticks_to_first_sight = world.tick_count
+
+        # Behavioral-signature tracking (memory adaptation): detect LOS-break.
+        # A break = saw Jerry last tick, not this tick. Record where Jerry
+        # was (the vanish tile / cover spot) so distillation can store the
+        # hotspots Tom should run down next time.
+        seeing_now = world._tom_can_see_jerry()
+        if seeing_now:
+            self._last_seen_jerry_tile = world.jerry.position
+        elif self._was_seeing_jerry_episode and self._last_seen_jerry_tile is not None:
+            # LOS just broke
+            self._los_break_count += 1
+            self._los_break_tiles[
+                (self._last_seen_jerry_tile.x, self._last_seen_jerry_tile.y)
+            ] += 1
+        self._was_seeing_jerry_episode = seeing_now
 
         # 1. Update drives/chemistry from the previous step's events.
         events = list(getattr(world, "_events_this_tick", []))
