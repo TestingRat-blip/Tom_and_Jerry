@@ -240,7 +240,20 @@ class ScriptedTom:
             explored += 1
             if cell == dst:
                 break
-            for a in (Action.NORTH, Action.SOUTH, Action.EAST, Action.WEST):
+            # NOTE: neighbor expansion order determines which of several
+            # EQUAL-LENGTH shortest paths BFS returns. A FIXED order (the
+            # old N,S,E,W) creates an exploitable movement-priority groove:
+            # a target reachable by multiple equal paths always resolves to
+            # the same axis first (vertical, since N/S were enqueued first),
+            # so a column-bobbing Jerry could hold Tom at distance 2 forever
+            # (Tom mirrors the bob, never spends a tick closing horizontally).
+            # Shuffling the expansion order per-cell removes the stable
+            # groove — there's no fixed frequency for a learner to lock onto.
+            # (Verification patch: confirms the tie-break is the exploit
+            # before we commit to a specific priority philosophy.)
+            neighbor_order = [Action.NORTH, Action.SOUTH, Action.EAST, Action.WEST]
+            self._rng.shuffle(neighbor_order)
+            for a in neighbor_order:
                 nxt = cell + ACTION_DELTAS[a]
                 if nxt in parents:
                     continue
