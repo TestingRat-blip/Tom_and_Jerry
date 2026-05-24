@@ -71,22 +71,30 @@ def main(argv=None):
                    help="Run Jerry deterministically (matches watch.py's "
                         "default). Use this to line up the trace with the "
                         "rendered replay tick-for-tick.")
+    p.add_argument("--locker-oxygen", action="store_true",
+                   help="Enable the locker oxygen/cooldown mechanic. Use to "
+                        "blind-trace an oxygen-unaware Jerry against the wall.")
     args = p.parse_args(argv)
 
     jerry, jlabel = make_jerry(args.jerry, args.seed, deterministic=args.deterministic)
     tom = make_tom(args.tom, args.seed)
 
-    world = World(WorldConfig(max_ticks=args.max_ticks), seed=args.seed)
+    world = World(
+        WorldConfig(max_ticks=args.max_ticks,
+                    locker_oxygen_enabled=args.locker_oxygen),
+        seed=args.seed,
+    )
     world.reset()
     if hasattr(tom, "reset"):
         tom.reset()
     if hasattr(jerry, "reset"):
         jerry.reset()
 
-    print(f"Trace: {jlabel} vs {args.tom}  seed={args.seed}")
+    print(f"Trace: {jlabel} vs {args.tom}  seed={args.seed}"
+          f"{'  [locker-oxygen ON]' if args.locker_oxygen else ''}")
     print(f"catch needs DIST<=1 + line-of-sight. catch_distance="
           f"{world.config.catch_distance}, tom_sight={world.config.tom_sight_range}")
-    print(f"{'tick':>4} {'DIST':>4} {'SEE':>3} {'LOCK':>4} "
+    print(f"{'tick':>4} {'DIST':>4} {'SEE':>3} {'LOCK':>4} {'OXY':>4} "
           f"{'STATE':>10} {'MODE':>11} {'ACT':>5} {'tom_pos':>9} {'jerry_pos':>9}")
 
     # distance histogram while visible
@@ -100,6 +108,8 @@ def main(argv=None):
         dist = world.tom.position.manhattan(world.jerry.position)
         see = world._tom_can_see_jerry()
         lock = world.jerry.in_locker
+        oxy = world._jerry_oxygen
+        oxy_str = str(oxy) if oxy is not None else "-"
         state = getattr(tom, "state", None)
         state_name = state.name if state is not None else "-"
         mode = getattr(tom, "current_mode", None)
@@ -111,7 +121,8 @@ def main(argv=None):
 
         if t % args.every == 0:
             print(f"{t:>4} {dist:>4} {'Y' if see else 'n':>3} "
-                  f"{'Y' if lock else '-':>4} {state_name:>10} {mode_name:>11} "
+                  f"{'Y' if lock else '-':>4} {oxy_str:>4} "
+                  f"{state_name:>10} {mode_name:>11} "
                   f"{Action(int(ta)).name[:5]:>5} "
                   f"{f'{world.tom.position.x},{world.tom.position.y}':>9} "
                   f"{f'{world.jerry.position.x},{world.jerry.position.y}':>9}")

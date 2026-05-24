@@ -76,13 +76,15 @@ def build_training_tom(tom_spec: str, seed: int):
 
 # ---- env factory --------------------------------------------------------
 
-def make_env(seed: int, world_max_ticks: int, archetype: str, tom_spec: str):
+def make_env(seed: int, world_max_ticks: int, archetype: str, tom_spec: str,
+             locker_oxygen: bool = False):
     """Factory closure for SB3 vector envs. Each call returns a NEW env
     configured for the given archetype, training against the given Tom.
     """
     def _init():
         env = JerryEnv(
-            world_config=WorldConfig(max_ticks=world_max_ticks),
+            world_config=WorldConfig(max_ticks=world_max_ticks,
+                                     locker_oxygen_enabled=locker_oxygen),
             reward_config=JerryRewardConfig.for_archetype(archetype),
             tom_policy=build_training_tom(tom_spec, seed),
         )
@@ -113,6 +115,7 @@ class EvalAgainstScriptedCallback(BaseCallback):
         log_path: Path,
         world_max_ticks: int,
         tom_spec: str = "scripted",
+        locker_oxygen: bool = False,
         verbose: int = 1,
     ):
         super().__init__(verbose)
@@ -123,6 +126,7 @@ class EvalAgainstScriptedCallback(BaseCallback):
         self.log_path = log_path
         self.world_max_ticks = world_max_ticks
         self.tom_spec = tom_spec
+        self.locker_oxygen = locker_oxygen
         self._n_calls_since_eval = 0
 
     def _on_step(self) -> bool:
@@ -179,7 +183,8 @@ class EvalAgainstScriptedCallback(BaseCallback):
         for i in range(self.n_eval_episodes):
             env_seed = self.eval_seed + seed_offset + i
             env = JerryEnv(
-                world_config=WorldConfig(max_ticks=self.world_max_ticks),
+                world_config=WorldConfig(max_ticks=self.world_max_ticks,
+                                         locker_oxygen_enabled=self.locker_oxygen),
                 reward_config=JerryRewardConfig.for_archetype(self.archetype),
                 tom_policy=build_training_tom(self.tom_spec, env_seed),
             )
@@ -252,6 +257,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--batch-size", type=int, default=256)
     p.add_argument("--gamma", type=float, default=0.995)
     p.add_argument("--ent-coef", type=float, default=0.01)
+    p.add_argument("--locker-oxygen", action="store_true",
+                   help="Train against the locker oxygen/cooldown env "
+                        "(camping is no longer free). Both training and eval "
+                        "envs get the mechanic. Note: does NOT change the obs "
+                        "vector — Jerry trains BLIND to its oxygen level.")
     return p.parse_args(argv)
 
 
@@ -284,7 +294,8 @@ def main(argv: list[str] | None = None) -> None:
 
     # Vector env — every env uses the same archetype + opponent + a different seed
     env_fns = [
-        make_env(args.seed + i, args.world_max_ticks, args.archetype, args.tom)
+        make_env(args.seed + i, args.world_max_ticks, args.archetype, args.tom,
+                 locker_oxygen=args.locker_oxygen)
         for i in range(args.n_envs)
     ]
     if args.subproc:
@@ -323,6 +334,7 @@ def main(argv: list[str] | None = None) -> None:
         log_path=eval_log,
         world_max_ticks=eval_max_ticks,
         tom_spec=args.tom,
+        locker_oxygen=args.locker_oxygen,
     )
 
     print(f"Training archetype {args.archetype!r} vs Tom {args.tom!r} "
