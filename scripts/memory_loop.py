@@ -59,7 +59,7 @@ def make_jerry(spec: str, seed: int):
 
 
 def run_episode(world, tom, jerry_policy, max_ticks):
-    """Run one episode. Returns (survived: bool, ticks, deployed: bool)."""
+    """Run one episode. Returns a dict of episode stats for diagnostics."""
     obs = world.reset()
     tom.reset()
     # Warm-start reads L2 → may deploy the run-down for this Jerry.
@@ -68,6 +68,9 @@ def run_episode(world, tom, jerry_policy, max_ticks):
         jerry_label=getattr(jerry_policy, "label", None),
     )
     deployed = bool(getattr(tom.conductor, "runtime_hold_on_los_break", False))
+    stance = getattr(tom, "last_stance", None)
+    stance_mean = stance.mean_los_breaks if stance is not None else 0.0
+    stance_eps = stance.episode_count if stance is not None else 0
     if hasattr(jerry_policy, "reset"):
         jerry_policy.reset()
 
@@ -77,8 +80,16 @@ def run_episode(world, tom, jerry_policy, max_ticks):
         world.step(tom_action=ta, jerry_action=int(ja))
         if not world.jerry.alive:
             break
-    survived = world.jerry.alive
-    return survived, world.tick_count, deployed
+    return {
+        "survived": world.jerry.alive,
+        "ticks": world.tick_count,
+        "deployed": deployed,
+        "los_breaks": tom._los_break_count,
+        "sight_ticks": tom._sight_tick_count,
+        "longest_streak": tom._longest_sight_streak,
+        "stance_mean": stance_mean,
+        "stance_eps": stance_eps,
+    }
 
 
 def main(argv=None):
@@ -108,8 +119,13 @@ def main(argv=None):
 
     block_survived = 0
     block_deployed = 0
+    block_los = 0
+    block_sight = 0
+    block_streak = 0
     block_n = 0
     overall_survived = 0
+    last_stance_mean = 0.0
+    last_stance_eps = 0
 
     for ep in range(args.episodes):
         # Fresh L1 per episode (per-encounter memory); L2 persists.
@@ -123,39 +139,63 @@ def main(argv=None):
         )
         world = World(WorldConfig(max_ticks=args.max_ticks), seed=args.seed + ep)
 
-        survived, ticks, deployed = run_episode(
-            world, tom, jerry_policy, args.max_ticks)
+        stats = run_episode(world, tom, jerry_policy, args.max_ticks)
 
         # Distill this episode into L2 (feeds future warm-starts).
         tom.distill_at_episode_end(
             world.grid, jerry_policy=jerry_policy,
-            outcome="survived" if survived else "caught",
-            total_ticks=ticks,
-            total_jerry_reward=0.0,  # reward not needed for this experiment
-            jerry_label=jerry_label,
+            outcome="survived" if stats["survived"] else "caught",
+            total_ticks=stats["ticks"],
+            total_jerry_reward=0.0,
+            jerry_label=getattr(jerry_policy, "label", None),
         )
 
-        block_survived += int(survived)
-        block_deployed += int(deployed)
-        overall_survived += int(survived)
+        block_survived += int(stats["survived"])
+        block_deployed += int(stats["deployed"])
+        block_los += stats["los_breaks"]
+        block_sight += stats["sight_ticks"]
+        block_streak += stats["longest_streak"]
+        overall_survived += int(stats["survived"])
         block_n += 1
+        last_stance_mean = stats["stance_mean"]
+        last_stance_eps = stats["stance_eps"]
 
         if block_n == args.block:
             sr = block_survived / block_n
             dr = block_deployed / block_n
+            mean_los = block_los / block_n
+            mean_sight = block_sight / block_n
+            mean_streak = block_streak / block_n
             lo = ep - block_n + 1
             print(f"  episodes {lo:3d}-{ep:3d}: survival={sr:4.0%}  "
-                  f"run-down deployed in {dr:4.0%} of episodes")
-            block_survived = block_deployed = block_n = 0
+                  f"deployed={dr:4.0%}  LOS-breaks={mean_los:4.1f}  "
+                  f"sight-ticks={mean_sight:5.1f}  longest-streak={mean_streak:4.1f}")
+            block_survived = block_deployed = block_los = 0
+            block_sight = block_streak = block_n = 0
 
     print(f"\nOverall survival: {overall_survived/args.episodes:.0%} "
           f"({overall_survived}/{args.episodes})")
-    print("\nRead the curve: if the memory loop works, later blocks should show")
-    print("the run-down deploying (as memory fills) and survival falling vs early")
-    print("blocks. Compare overall survival to the always-on 36% and plain 40%.")
+    print(f"\nDIAGNOSTIC READING:")
+    print(f"  sight-ticks = how many ticks/episode Tom actually had LOS to Jerry.")
+    print(f"  longest-streak = longest unbroken run of LOS ticks.")
+    print(f"  If sight-ticks is LOW (single digits over a 300-tick episode), Tom")
+    print(f"  barely SEES Jerry at all — the exploit denies LOS acquisition, not")
+    print(f"  just LOS holding. Then LOS-break counting can't detect it (you can't")
+    print(f"  count breaks of a sightline you never establish), and the right signal")
+    print(f"  is something observable WITHOUT sightings (cover-time from noise/scent,")
+    print(f"  or belief-target jitter), not LOS-breaks.")
 
+    # Close the DB connection before removing the temp file (Windows locks
+    # open files).
+    try:
+        sql.close()
+    except Exception:
+        pass
     if not args.db:
-        db_path.unlink(missing_ok=True)
+        try:
+            db_path.unlink(missing_ok=True)
+        except OSError:
+            pass  # Windows may still hold the handle briefly; harmless.
 
 
 if __name__ == "__main__":

@@ -190,6 +190,10 @@ class ChemicalTom(ScriptedTom):
         self._los_break_tiles: "Counter" = Counter()
         self._was_seeing_jerry_episode: bool = False
         self._last_seen_jerry_tile: Position | None = None
+        # Diagnostic: how much LOS Tom actually gets on Jerry this episode.
+        self._sight_tick_count: int = 0
+        self._cur_sight_streak: int = 0
+        self._longest_sight_streak: int = 0
 
     def reset(self) -> None:
         super().reset()
@@ -205,6 +209,9 @@ class ChemicalTom(ScriptedTom):
         self._los_break_tiles = Counter()
         self._was_seeing_jerry_episode = False
         self._last_seen_jerry_tile = None
+        self._sight_tick_count = 0
+        self._cur_sight_streak = 0
+        self._longest_sight_streak = 0
         # If L1 is attached, clear its episode state too.
         if self.l1 is not None:
             self.l1.reset()
@@ -336,12 +343,20 @@ class ChemicalTom(ScriptedTom):
         seeing_now = world._tom_can_see_jerry()
         if seeing_now:
             self._last_seen_jerry_tile = world.jerry.position
+            # Diagnostic: total ticks Tom had LOS, and current/longest streak.
+            self._sight_tick_count += 1
+            self._cur_sight_streak += 1
+            self._longest_sight_streak = max(
+                self._longest_sight_streak, self._cur_sight_streak)
         elif self._was_seeing_jerry_episode and self._last_seen_jerry_tile is not None:
             # LOS just broke
             self._los_break_count += 1
             self._los_break_tiles[
                 (self._last_seen_jerry_tile.x, self._last_seen_jerry_tile.y)
             ] += 1
+            self._cur_sight_streak = 0
+        if not seeing_now:
+            self._cur_sight_streak = 0
         self._was_seeing_jerry_episode = seeing_now
 
         # 1. Update drives/chemistry from the previous step's events.

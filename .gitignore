@@ -33,3 +33,6 @@ data/logs/*
 # Local config overrides
 configs/local/
 .env
+
+# Persistence DB (runtime state, not source)
+data/persistence/
