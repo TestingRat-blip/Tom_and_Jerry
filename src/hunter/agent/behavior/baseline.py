@@ -59,6 +59,7 @@ class ScriptedTomConfig:
     # Patrol
     patrol_retarget_distance: int = 3  # how close to a patrol point before picking a new one
     patrol_retarget_after: int = 40    # max ticks on one patrol target before giving up
+    patrol_target_max_tries: int = 8   # attempts to draw a REACHABLE patrol target (Defect-A fix)
 
     # Movement
     wall_bump_avoidance: bool = True   # if a chosen action would bump a wall, try alternatives
@@ -322,6 +323,18 @@ class ScriptedTom:
     def _patrol(self, world: World) -> Action:
         """Wander toward a randomly chosen patrol target, retargeting
         when reached or stale.
+
+        Defect-A fix (the WAIT-stall): the map generator can produce
+        walkable-but-unreachable tiles (isolated pockets). If patrol picks
+        one, BFS can't route to it and _step_toward returns WAIT — parking
+        Tom in place (often wedged in a dead-end pocket) until the staleness
+        timer finally fires ~40 ticks later. A hunter standing still is never
+        correct. Two guards:
+          1. Pick a target Tom can actually BFS-reach from here (retry a few
+             times), so unreachable pockets are never selected.
+          2. If the step toward the current target is still WAIT (target
+             went unreachable, or Tom is wedged), retarget IMMEDIATELY rather
+             than waiting out the staleness timer.
         """
         need_new = (
             self.patrol_target is None
@@ -331,9 +344,37 @@ class ScriptedTom:
                 > self.config.patrol_retarget_after
         )
         if need_new:
-            self.patrol_target = world.grid.random_empty_position(self._rng)
-            self.patrol_target_set_tick = world.tick_count
-        return self._step_toward(world.tom.position, self.patrol_target, world)
+            self._choose_reachable_patrol_target(world)
+
+        action = self._step_toward(world.tom.position, self.patrol_target, world)
+
+        # No-stall guard: a WAIT here means the target is unreachable from
+        # Tom's current tile (or src==dst on a tile that didn't retarget).
+        # Don't freeze — pick a fresh reachable target and move now.
+        if action == Action.WAIT:
+            self._choose_reachable_patrol_target(world)
+            action = self._step_toward(world.tom.position, self.patrol_target, world)
+
+        return action
+
+    def _choose_reachable_patrol_target(self, world: World) -> None:
+        """Pick a patrol target Tom can actually path to from his current
+        position. Retries a bounded number of times; falls back to any empty
+        position if every attempt is unreachable (degenerate maps), so this
+        never loops unboundedly."""
+        src = world.tom.position
+        for _ in range(self.config.patrol_target_max_tries):
+            candidate = world.grid.random_empty_position(self._rng)
+            if candidate == src:
+                continue
+            # Reachable iff BFS finds a first step toward it.
+            if self._bfs_first_step(src, candidate, world) is not None:
+                self.patrol_target = candidate
+                self.patrol_target_set_tick = world.tick_count
+                return
+        # Fallback: accept whatever we last drew (rare; keeps behavior defined).
+        self.patrol_target = world.grid.random_empty_position(self._rng)
+        self.patrol_target_set_tick = world.tick_count
 
     # ---- wall avoidance ------------------------------------------------
 
