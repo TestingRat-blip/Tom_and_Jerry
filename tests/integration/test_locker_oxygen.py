@@ -133,3 +133,42 @@ def test_voluntary_exit_starts_cooldown():
     assert world.jerry.in_locker is False
     assert pos in world._locker_cooldowns, "voluntary exit should start cooldown"
     assert world._jerry_oxygen is None
+
+
+# ---- observation: oxygen visible to Jerry -----------------------------
+
+def test_oxygen_in_observation_full_when_not_hiding():
+    """Jerry's obs exposes oxygen as the last scalar; 1.0 when not in a
+    depleting locker."""
+    cfg = WorldConfig(locker_oxygen_enabled=True, locker_oxygen_capacity=10)
+    world = World(cfg, seed=42)
+    world.reset()
+    assert world._observe_jerry().to_vector()[-1] == 1.0
+
+
+def test_oxygen_in_observation_tracks_depletion():
+    cfg = WorldConfig(locker_oxygen_enabled=True, locker_oxygen_capacity=10)
+    world = World(cfg, seed=42)
+    world.reset()
+    pos = _first_locker(world)
+    _enter_locker(world, pos)
+    world.tick_count += 1
+    world._tick_locker_oxygen()
+    # 9/10 remaining
+    assert abs(world._observe_jerry().to_vector()[-1] - 0.9) < 1e-5
+
+
+def test_oxygen_obs_constant_when_disabled():
+    """With the mechanic off, oxygen reads a constant 1.0 (non-informative)."""
+    world = World(WorldConfig(locker_oxygen_enabled=False), seed=42)
+    world.reset()
+    assert world._observe_jerry().to_vector()[-1] == 1.0
+
+
+def test_obs_vector_grew_by_one():
+    """The oxygen field added exactly one scalar to the obs vector."""
+    world = World(WorldConfig(), seed=42)
+    world.reset()
+    obs = world._observe_jerry()
+    # grid window + 14 scalars (was 13 pre-oxygen)
+    assert obs.vector_size == obs.grid_window.size + 14
