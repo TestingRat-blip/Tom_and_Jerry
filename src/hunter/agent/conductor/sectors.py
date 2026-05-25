@@ -29,9 +29,19 @@ from src.utils.types import Position
 
 @dataclass(frozen=True)
 class SectorConfig:
-    """How the grid is divided into sectors."""
-    cols: int = 3   # sectors across (x)
-    rows: int = 3   # sectors down (y)
+    """How the grid is divided into sectors.
+
+    5x5 (was 3x3): with 3x3 on a 30x30 map, each sector is 10x10 tiles and
+    the Conductor patrols to sector CENTROIDS — leaving a motionless prey in a
+    sector's corner ~7 tiles from where Tom ever goes, outside his effective
+    sweep. That let "statues" hide in unswept corners for a whole night. 5x5
+    makes sectors 6x6 tiles, so centroid visits actually bring Tom within
+    sight of the whole sector, closing the open-corner coverage gap. (Does not
+    fix LOS-occluded pockets — those are a separate perception problem for the
+    Phase 8 sensory model.)
+    """
+    cols: int = 5   # sectors across (x)
+    rows: int = 5   # sectors down (y)
 
 
 class SectorMap:

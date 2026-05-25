@@ -291,3 +291,44 @@ Tom mirrored forever for free. Applied to Phase 8:
   emergent donut as built-in blind-spot counter, the cost-of-staying defense
   rule, and the hallucination/escalating-memory premise as the diegetic frame
   for the persistent-learning centerpiece. All constants TODO-tune.
+
+---
+
+## Motivating case: the occluded-pocket statue (found Round 8, batch 19)
+
+A concrete, reproducible failure that ONLY the sensory model fixes — recorded
+here so the Phase 8 build has a real target instead of an abstract goal.
+
+**Setup:** seed 26, the kiter_600 Jerry. Jerry spawns at (1,28), a pocket in
+the bottom-left corner sealed by walls along row 27 with a single entrance gap
+at (3,27). If Jerry simply stands still (move_frac 0.00), it survives the full
+600-tick night.
+
+**Why every Phase-6 fix fails on it:**
+- It is NOT a reachability bug — `_spawn_agents` (batch 16) guarantees Tom can
+  path there.
+- It is NOT a coverage bug — the 5x5 sector patrol (batch 19) brings Tom within
+  ~6 tiles, well inside his sight *range* of 10.
+- It survives anyway because the row-27 walls **block line of sight** into the
+  pocket. Tom is near, but cannot SEE a motionless prey, so belief never fires,
+  PURSUE never triggers, and he wanders off. A silent statue emits no noise and
+  negligible scent, so sight is Tom's only channel — and sight is occluded.
+
+**Why this is a Phase 8 case, not a Phase 6 bug:** the only general fixes are
+(a) rework the map geometry (whack-a-mole — the generator will always produce
+some occluded pocket), or (b) give Tom non-visual senses. (b) is the Phase 8
+sensory model. A hidden, motionless, silent prey is exactly what hearing/scent
+exist to flush out: even a statue leaves a faint scent gradient, and the three-
+channel fusion would let Tom sense "something is in that pocket" without seeing
+it. The donut/blind-spot reasoning already in this doc is the same machinery.
+
+**Thematic note (Alien: Isolation north star):** a predator that finds a
+perfectly-still, hidden prey using *sight alone* would be less interesting, not
+more. The ~2% "statue in a sealed pocket survives" outcome is arguably the
+correct sliver of hope — Phase 8 scent is what *shrinks* that sliver toward
+zero, turning "hold still and pray" from a reliable strategy into a desperate,
+usually-failing gamble.
+
+**Acceptance test for the Phase 8 build:** seed 26, stationary Jerry, must be
+found and caught once Tom has scent. If it still survives, the scent channel
+isn't reaching occluded pockets and needs tuning.
