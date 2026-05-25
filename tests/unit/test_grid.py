@@ -121,3 +121,50 @@ def test_discrete_action_space():
     # Sample stays in range
     for _ in range(50):
         assert space.contains(space.sample())
+
+
+# ---- reachability (spawn-connectivity bug fix) ------------------------
+
+def _split_grid():
+    """A 5x3 grid split by a vertical wall at x=2 into two disconnected
+    rooms (left x<2, right x>2)."""
+    tiles = np.zeros((3, 5), dtype=np.int8)
+    tiles[:, 2] = int(TileType.WALL)
+    return Grid(width=5, height=3, tiles=tiles)
+
+
+def test_is_reachable_within_connected_region():
+    g = _split_grid()
+    # Two tiles in the same (left) room are reachable.
+    assert g.is_reachable(Position(1, 0), Position(1, 2))
+
+
+def test_is_reachable_false_across_partition():
+    g = _split_grid()
+    # Left room to right room is blocked by the wall column.
+    assert not g.is_reachable(Position(1, 1), Position(3, 1))
+
+
+def test_is_reachable_same_tile():
+    g = _split_grid()
+    assert g.is_reachable(Position(1, 1), Position(1, 1))
+
+
+def test_is_reachable_false_for_wall_endpoint():
+    g = _split_grid()
+    # An endpoint that isn't walkable is never reachable.
+    assert not g.is_reachable(Position(1, 1), Position(2, 1))  # (2,1) is wall
+
+
+def test_generated_spawns_are_always_connected():
+    """Regression: _spawn_agents must place Tom and Jerry on mutually
+    reachable tiles. Pre-fix, the generator could place Jerry in a pocket
+    Tom could not path to (seed 49 was one such case), inflating survival."""
+    from src.env.world.world import World, WorldConfig
+    for seed in range(60):
+        w = World(WorldConfig(), seed=seed)
+        w.reset()
+        assert w.grid.is_reachable(w.tom.position, w.jerry.position), (
+            f"seed {seed}: Tom {w.tom.position} cannot reach Jerry "
+            f"{w.jerry.position}"
+        )
