@@ -107,6 +107,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="Don't write JSON output to data/logs/.",
     )
+    p.add_argument(
+        "--locker-oxygen",
+        action="store_true",
+        help="Enable the locker oxygen/cooldown mechanic in the eval env. "
+             "Required when evaluating a Jerry trained with --locker-oxygen "
+             "(its obs vector includes oxygen; the env must match).",
+    )
     return p.parse_args(argv)
 
 
@@ -267,6 +274,7 @@ def evaluate_cell(
     max_ticks: int,
     base_seed: int,
     deterministic: bool,
+    locker_oxygen: bool = False,
 ) -> dict[str, Any]:
     """Run one (archetype, tom_policy) cell. Returns aggregated stats."""
     from stable_baselines3 import PPO
@@ -281,7 +289,8 @@ def evaluate_cell(
         seed = base_seed + i
         tom = tom_factory(seed)
         env = JerryEnv(
-            world_config=WorldConfig(max_ticks=max_ticks),
+            world_config=WorldConfig(max_ticks=max_ticks,
+                                     locker_oxygen_enabled=locker_oxygen),
             reward_config=reward_cfg,
             tom_policy=tom,
         )
@@ -397,6 +406,7 @@ def main(argv: list[str] | None = None) -> None:
                 max_ticks=args.max_ticks,
                 base_seed=args.seed,
                 deterministic=args.deterministic,
+                locker_oxygen=args.locker_oxygen,
             )
             cell_dt = time.time() - t_cell
             cell["elapsed_seconds"] = cell_dt
