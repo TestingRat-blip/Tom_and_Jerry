@@ -332,3 +332,62 @@ usually-failing gamble.
 **Acceptance test for the Phase 8 build:** seed 26, stationary Jerry, must be
 found and caught once Tom has scent. If it still survives, the scent channel
 isn't reaching occluded pockets and needs tuning.
+
+---
+
+## UPDATE (post map-gen fix): the statue is a SENSORY problem, confirmed by exhaustion
+
+The occluded-pocket framing above was incomplete. After the batch-19 sector fix
+we tried three more things to kill the motionless-statue strategy, and the
+sequence is itself the lesson:
+
+1. **Scent diffusion** (scent.py `_diffuse`, gated off). Built so a stationary
+   prey's scent pool would spread out of its hiding spot to where Tom patrols.
+   It works (mass-conserving, verified) and would catch a statue in any normal
+   or open spot — but the seed-26 dogleg pocket defeats it: scent physically
+   reaches the corridor at ~0.002, ~80x below Tom's 0.15 detection threshold,
+   and forcing it stronger smears scent globally and destroys directional
+   tracking. Diffusion catches ZERO additional statues. Kept as dormant
+   infrastructure for the richer emission model below, NOT as a statue fix.
+
+2. **Dead-end map cleanup** (grid.py `_open_dead_ends`). Eliminated all 573
+   dead-end tiles across 50 seeds. This DID help — but the statue strategy
+   simply relocated: seed 26's prey moved from the (1,28) dead-end to (28,2),
+   an LOS-occluded corner that is NOT a dead-end (2 walkable neighbors). Tom
+   gets within 5 tiles but never sees it (walls block LOS).
+
+3. The conclusion, reached by exhausting geometry/patrol fixes: **a perfectly
+   motionless, silent prey will always have SOME blind spot to sit in, as long
+   as Tom relies on line of sight.** Geometry fixes are whack-a-mole — the
+   statue moves to the next unseen tile. This is not a map bug or a patrol bug.
+   It is a fundamental limit of sight-only hunting against a zero-signal prey.
+
+**Important practical caveat:** this is only a 1/50 vulnerability for a prey
+that sits PERFECTLY STILL at one specific tile. The trained RL prey does not
+learn this — kiting dominates in training — so against the actual trained
+kiter_600 Jerry on the cleaned maps, survival is **0/50**. The statue is a
+theoretical hole, not a strategy the optimizer currently finds. It matters for
+robustness/completeness, not because prey are exploiting it today.
+
+### The real fix: presence emission + non-visual sensing
+
+The only general solution is for a still prey to EMIT something a non-visual
+sense can detect. The missing primitive is **persistent body/presence emission**
+— a creature emits a faint signal just by existing at a location, not only by
+moving — combined with a sense that reads it without line of sight. Diffusion
+(already built) is the transport; the missing piece is emission strong/managed
+enough to be detectable without global smearing. Candidate approaches for the
+Phase 8 build (to be evaluated, not yet decided):
+  - Accumulating presence-scent with a higher cap, so a statue slowly builds a
+    strong LOCAL pool, plus a sense that triggers on local pool strength rather
+    than a diffused gradient (sidesteps the dogleg-transport problem).
+  - A "hearing"/proximity sense with a short range that fires when Tom is near
+    regardless of LOS (a faint heartbeat/breathing the predator senses up close).
+  - Fear-modulated emission: a cornered/hidden prey emits MORE (panic), turning
+    the act of hiding into a tell — thematically the strongest option.
+
+**Acceptance test for the Phase 8 build (revised):** stationary Jerry must be
+found and caught on seed 26 (currently spawns ~(28,2) on cleaned maps) AND in
+any hand-placed LOS-occluded corner, via a non-visual sense — without that sense
+smearing so broadly that normal-case directional scent tracking breaks. Pass =
+statue caught + normal scent-tracking still directional.
