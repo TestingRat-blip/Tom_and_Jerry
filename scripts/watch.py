@@ -175,6 +175,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--no-render", action="store_true",
                    help="Don't open the renderer window. Useful with --save.")
     p.add_argument("--tile-px", type=int, default=32)
+    p.add_argument("--locker-oxygen", action="store_true",
+                   help="Enable the locker oxygen/cooldown mechanic. Required "
+                        "to correctly replay a Jerry trained with --locker-oxygen "
+                        "(its obs vector includes oxygen; the env must match).")
     return p.parse_args(argv)
 
 
@@ -194,7 +198,8 @@ def main(argv: list[str] | None = None) -> None:
     tom, tom_label = _make_tom_policy(args.tom, seed=args.seed)
 
     print(f"Recording episode: jerry={jerry_label}  tom={tom_label}  seed={args.seed}")
-    rec = ReplayRecorder(world_config=WorldConfig(max_ticks=args.max_ticks),
+    rec = ReplayRecorder(world_config=WorldConfig(max_ticks=args.max_ticks,
+                                                  locker_oxygen_enabled=args.locker_oxygen),
                          seed=args.seed)
     replay = rec.record_episode(
         jerry_policy=jerry, tom_policy=tom,
