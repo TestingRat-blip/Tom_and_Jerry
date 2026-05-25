@@ -390,3 +390,77 @@ def test_old_phase1_replay_still_loads(tmp_path):
     assert loaded.frames[0].tom_drives == {}
     assert loaded.frames[0].tom_predicted_jerry is None
     assert loaded.frames[0].tom_prediction_steps == 0
+
+
+# ---- wall-aware prediction (corner-cubby oscillation fix) -------------
+
+def test_prediction_does_not_phase_through_walls():
+    """Regression for the corner-cubby standoff (seed 0): a wall-blocked Jerry
+    drifting toward a wall must NOT be predicted on the far side of it.
+
+    Before the fix, _predict_jerry_target extrapolated Jerry's velocity and
+    only checked that the FINAL tile was walkable — so a Jerry pinned against
+    a wall, with eastward drift in his history, got predicted three tiles east
+    THROUGH the wall. Tom then chased a phantom and oscillated forever.
+    """
+    from collections import deque
+    world = World(WorldConfig(max_ticks=300), seed=0)
+    world.reset()
+    tom = ChemicalTom(seed=0)
+    tom.reset()
+
+    # Find a walkable tile with a wall immediately to its east.
+    from src.utils.types import TileType
+    pinned = None
+    for x in range(1, world.grid.width - 1):
+        for y in range(1, world.grid.height - 1):
+            here = Position(x, y)
+            east = Position(x + 1, y)
+            if world.grid.is_walkable(here) and not world.grid.is_walkable(east):
+                pinned = here
+                break
+        if pinned:
+            break
+    assert pinned is not None, "seed 0 should have a wall-pinned tile"
+
+    # Seed history with eastward drift INTO the wall, max adrenaline (predicts
+    # the full horizon ahead).
+    tom.chemistry.adrenaline = 1.0
+    tom._jerry_position_history = deque(
+        [Position(pinned.x - 2, pinned.y),
+         Position(pinned.x - 1, pinned.y),
+         pinned],
+        maxlen=3,
+    )
+    world.jerry.position = pinned
+
+    target = tom._predict_jerry_target(world)
+    # Prediction must not be east of the wall — Jerry can't go there.
+    assert target.x <= pinned.x, (
+        f"prediction {target} phased east through the wall past {pinned}"
+    )
+    # And every tile from Jerry to the prediction must be walkable.
+    assert world.grid.is_reachable(pinned, target)
+
+
+def test_walk_predicted_path_stops_at_wall():
+    """_walk_predicted_path returns the last walkable tile before a wall."""
+    world = World(WorldConfig(max_ticks=300), seed=0)
+    world.reset()
+    tom = ChemicalTom(seed=0)
+    tom.reset()
+    from src.utils.types import TileType
+    # Find a wall-pinned tile (wall to the east) again.
+    pinned = None
+    for x in range(1, world.grid.width - 1):
+        for y in range(1, world.grid.height - 1):
+            if world.grid.is_walkable(Position(x, y)) \
+                    and not world.grid.is_walkable(Position(x + 1, y)):
+                pinned = Position(x, y)
+                break
+        if pinned:
+            break
+    # Walking east toward a far target must stop at pinned (wall blocks step).
+    far_east = Position(pinned.x + 5, pinned.y)
+    result = tom._walk_predicted_path(pinned, far_east, world)
+    assert result == pinned, f"expected stop at {pinned}, got {result}"

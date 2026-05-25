@@ -782,19 +782,60 @@ class ChemicalTom(ScriptedTom):
             self.last_prediction_steps = 0
             return curr
 
-        # Snap to nearest walkable tile in case prediction lands in a wall
-        if not world.grid.in_bounds(predicted) or not world.grid.is_walkable(predicted):
-            for s in range(steps_ahead - 1, 0, -1):
-                candidate = Position(
-                    curr.x + int(round(avg_dx * s)),
-                    curr.y + int(round(avg_dy * s)),
-                )
-                if world.grid.in_bounds(candidate) and world.grid.is_walkable(candidate):
-                    predicted = candidate
-                    break
-            else:
-                predicted = curr
+        # Wall-aware extrapolation. Jerry cannot move through walls, so we
+        # must not predict him on the far side of one. The old code only
+        # checked whether the FINAL predicted tile was walkable — but a tile
+        # beyond a wall is often itself open floor (reachable by some other
+        # path), so the check passed and Tom chased a phantom Jerry through
+        # the wall. That seeded the corner-cubby oscillation: a wall-blocked
+        # Jerry drifting east got predicted as continuing east THROUGH the
+        # wall, sending Tom toward an impossible tile.
+        #
+        # Fix: walk the predicted ray one tile at a time from Jerry's current
+        # position; stop at the last tile reachable by a clear step-path. We
+        # advance along whichever axis is behind (Bresenham-ish on the integer
+        # ray), checking each intermediate tile is walkable. The moment the
+        # next step would hit a wall or leave bounds, we stop — predicting the
+        # last good tile, never past the obstacle.
+        reachable = self._walk_predicted_path(curr, predicted, world)
+        if reachable == curr:
+            # Jerry is wall-blocked in the predicted direction (no forward
+            # progress possible) — predict his actual position. Honest: he's
+            # pinned, so "where he is" is the right target.
+            self.last_predicted_jerry_pos = curr
+            self.last_prediction_steps = 0
+            return curr
 
-        self.last_predicted_jerry_pos = predicted
+        self.last_predicted_jerry_pos = reachable
         self.last_prediction_steps = steps_ahead
-        return predicted
+        return reachable
+
+    def _walk_predicted_path(self, start: Position, target: Position,
+                             world: World) -> Position:
+        """Walk a straight-ish tile path from start toward target, stopping at
+        the last walkable tile before any wall / out-of-bounds. Cardinal steps
+        only (matching agent movement); returns the furthest reachable tile on
+        the way to target (which may be start itself if blocked immediately)."""
+        x, y = start.x, start.y
+        last_good = start
+        # Step until we reach the target tile, advancing one cardinal step at a
+        # time toward it (reduce the larger remaining axis first — a simple
+        # greedy walk that approximates the prediction ray).
+        guard = 0
+        while (x, y) != (target.x, target.y) and guard < 64:
+            guard += 1
+            dx = target.x - x
+            dy = target.y - y
+            # Choose the axis with greater remaining distance to step along.
+            if abs(dx) >= abs(dy) and dx != 0:
+                nx, ny = x + (1 if dx > 0 else -1), y
+            elif dy != 0:
+                nx, ny = x, y + (1 if dy > 0 else -1)
+            else:
+                nx, ny = x + (1 if dx > 0 else -1), y
+            nxt = Position(nx, ny)
+            if not world.grid.in_bounds(nxt) or not world.grid.is_walkable(nxt):
+                break  # wall ahead — stop at last good tile
+            x, y = nx, ny
+            last_good = nxt
+        return last_good
