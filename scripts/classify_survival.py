@@ -99,7 +99,9 @@ def main(argv=None):
     p.add_argument("--jerry", required=True)
     p.add_argument("--tom", default="conductor")
     p.add_argument("--seeds", default="0-49")
-    p.add_argument("--max-ticks", type=int, default=300)
+    p.add_argument("--max-ticks", type=int, default=600,
+                   help="Per-episode tick cap (600 = full night; 300 "
+                        "mis-scores slow catches as survivals).")
     p.add_argument("--deterministic", action="store_true")
     p.add_argument("--locker-oxygen", action="store_true",
                    help="Enable the locker oxygen/cooldown mechanic.")

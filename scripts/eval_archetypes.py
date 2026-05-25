@@ -80,8 +80,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument(
         "--max-ticks",
         type=int,
-        default=300,
-        help="Per-episode tick cap.",
+        default=600,
+        help="Per-episode tick cap. Defaults to 600 (a full night). NOTE: "
+             "earlier evals used 300, which mis-scored slow catches as "
+             "survivals — e.g. a kiter caught at tick 336 (seed 21) looked "
+             "like a survivor in a 300-tick window. 600 matches the night "
+             "length so 'survived' means survived the night.",
     )
     p.add_argument(
         "--seed",
