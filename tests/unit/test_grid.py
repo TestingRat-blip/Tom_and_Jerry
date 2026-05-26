@@ -168,3 +168,54 @@ def test_generated_spawns_are_always_connected():
             f"seed {seed}: Tom {w.tom.position} cannot reach Jerry "
             f"{w.jerry.position}"
         )
+
+
+def _walkable_tiles(g: Grid) -> list[Position]:
+    return [Position(x, y)
+            for x in range(g.width) for y in range(g.height)
+            if g.is_walkable(Position(x, y))]
+
+
+def _walkable_neighbor_count(g: Grid, p: Position) -> int:
+    return sum(1 for d in ((0, 1), (0, -1), (1, 0), (-1, 0))
+               if g.is_walkable(Position(p.x + d[0], p.y + d[1])))
+
+
+@pytest.mark.parametrize("seed", range(30))
+def test_generated_map_has_no_dead_ends(seed: int):
+    """Every walkable tile has >=2 walkable neighbors (no sealed nooks).
+
+    Dead-end pockets let a motionless prey hide where sight and scent can't
+    reach (the seed-26 statue). The generator's cleanup pass must eliminate
+    them on every seed.
+    """
+    g = Grid.generate(seed=seed)
+    dead_ends = [p for p in _walkable_tiles(g)
+                 if _walkable_neighbor_count(g, p) <= 1]
+    assert not dead_ends, f"seed {seed} has dead-ends: {[(p.x, p.y) for p in dead_ends]}"
+
+
+@pytest.mark.parametrize("seed", range(30))
+def test_generated_map_is_fully_connected(seed: int):
+    """All walkable tiles form ONE connected region — no isolated pockets.
+
+    'No dead-ends' does NOT imply connected: a sealed 2x2 room has every tile
+    at 2 neighbors yet is unreachable. Regression guard for the connectivity
+    pass (seeds 5 and 29 previously had isolated 2x2 rooms).
+    """
+    from collections import deque
+    g = Grid.generate(seed=seed)
+    walkable = _walkable_tiles(g)
+    assert walkable, f"seed {seed} has no walkable tiles"
+    start = walkable[0]
+    seen = {(start.x, start.y)}
+    q = deque([start])
+    while q:
+        c = q.popleft()
+        for d in ((0, 1), (0, -1), (1, 0), (-1, 0)):
+            n = Position(c.x + d[0], c.y + d[1])
+            if g.is_walkable(n) and (n.x, n.y) not in seen:
+                seen.add((n.x, n.y))
+                q.append(n)
+    unreachable = len(walkable) - len(seen)
+    assert unreachable == 0, f"seed {seed}: {unreachable} walkable tiles isolated from main region"
