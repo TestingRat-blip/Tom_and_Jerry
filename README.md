@@ -29,11 +29,18 @@ rich inputs colliding inside a legible controller, never from an opaque policy.
 
 ## Status
 
-**Phase 6+ — co-evolution active.** The core simulation, the two-brain hunter
-("the Conductor"), the persistent memory system, and the PPO prey population are
-all built and tested (**400+ tests passing**). The project is currently in the
-co-evolution loop: training prey against the hunter, finding what they exploit,
-and closing it — round by round.
+**Phase 8 — co-evolution active, the senses-and-speed era.** The core
+simulation, the two-brain hunter ("the Conductor"), the persistent memory
+system, and the PPO prey population are all built and tested (**485 tests
+passing**). The project is in the co-evolution loop: train prey against the
+hunter, find what they exploit, close it — round by round.
+
+As of the latest round, **a prey trained specifically to beat the current
+hunter survives 0 out of 50 nights.** Every static exploit is closed, and the
+most recent fix shut down the last *mobile* survival strategy too (see below).
+The open frontier is sensory: a perfectly silent, motionless prey hidden where
+the hunter has no line of sight can still survive — which is precisely what the
+next layer (scent / presence sensing) exists to solve.
 
 Not a plug-and-play game yet; it's a research sandbox. See
 [`docs/ROADMAP.md`](docs/ROADMAP.md) for build order and
@@ -69,21 +76,37 @@ just needs more attempts than the designer has foresight.
 | 4 | *(exploit closed)* | **randomized the movement tie-break** | 40% → 6% |
 | 5 | **Locker-camping** — hide in the one tile with no cost-of-staying | — | 14%, all camping |
 | 6 | *(exploit closed)* | **locker oxygen + cooldown** (the refuge betrays you) | camping 14% → 2% |
-| 7 | *(in progress)* — prey abandoned lockers, learning to evade in the open | … | … |
+| 7 | A **corner-cubby**: wedge in a wall pocket where the hunter's prediction phased *through* the wall and it chased a ghost forever | **wall-aware prediction** | cubby dies → 0/50 |
+| 8 | First **genuine kiter** — real map-wide evasion; plus motionless **statues** in unswept corners | **finer patrol coverage; dead-end map cleanup** | open-corner statues die |
+| 9 | The most capable prey yet — broad mobile evasion **and a "circle"** (run a closed loop the equal-speed hunter can't cut) | *(diagnosed: equal-speed pursuit, not a bug)* | 9 surviving strategies |
+| 10 | *(exploit closed)* | **pursuit speed ramp** — the hunter winds up during a sustained chase | all 9 caught; retrain in progress |
 
-The Round 3→4 fix is the project's favorite story: the prey had learned to pin
-itself against a wall and bob up and down in a single column, and the hunter
-*mirrored the bobbing forever* — standing two tiles away, unable to close.
-The root cause was a fixed `N/S`-before-`E/W` tie-break in the hunter's
-pathfinding (recognized by analogy to **Old School RuneScape movement
-priority**). Randomizing the tie-break dropped that prey's survival from 40% to
-6%, verified three independent ways. The "clever stealth tactic" was never
-stealth at all — it was one resonance, ridden hard.
+Two of these are the project's favorite stories:
 
-Full write-ups live in `docs/` — see
-[`docs/RETRO_MEMORY_ADAPTATION_ARC.md`](docs/RETRO_MEMORY_ADAPTATION_ARC.md),
-[`docs/FINDINGS_ARMS_RACE.md`](docs/FINDINGS_ARMS_RACE.md), and
-[`docs/PROJECT_STATE_RETRO.md`](docs/PROJECT_STATE_RETRO.md).
+**The column-bob (Round 3→4).** The prey learned to pin itself against a wall
+and bob up and down in a single column, and the hunter *mirrored the bobbing
+forever* — standing two tiles away, unable to close. The root cause was a fixed
+`N/S`-before-`E/W` tie-break in the hunter's pathfinding (recognized by analogy
+to **Old School RuneScape movement priority**). Randomizing the tie-break
+dropped that prey's survival from 40% to 6%, verified three independent ways.
+The "clever stealth tactic" was never stealth — it was one resonance, ridden
+hard.
+
+**The circle (Round 9→10).** Once every *static* exploit was closed, a prey
+trained 2.5M steps finally learned real map-wide kiting — genuinely beautiful to
+watch, using the whole stage. But at the edge of that skill it found a new
+resonance: run a tight closed loop, and an **equal-speed** hunter chasing your
+current position can never cut the corner to close the last two tiles. It orbits
+behind you forever. The fix wasn't a bug patch — the loop is genuine geometry.
+It was a *design* answer: the hunter now **accelerates during a sustained
+chase** (a slow wind-up toward 1.15×, decaying only once it loses you), so
+running in the open too long means the predator closes — and the only
+counterplay left is to **break line of sight and use the environment**. Pure
+Alien: Isolation: you cannot out-run it, you can only get out of sight.
+
+Full write-ups live in `docs/` — the retrospectives and findings document the
+failed bets as honestly as the wins, including five build cycles spent
+countering an exploit that turned out to be a misread.
 
 ---
 
@@ -105,16 +128,22 @@ cross-session (L2, SQLite), with behavioral distillation so the hunter can learn
 *how a given prey behaves* across encounters — the substrate for the
 "remembers you across nights" goal.
 
+**The environment** is a headless top-down grid with line-of-sight, sound
+propagation, a diffusing scent field, lockers (timed hiding with an oxygen cost,
+so the refuge betrays you), vents, and a map generator that guarantees
+connected, dead-end-free layouts — survival has to come from skill, not from a
+geometry quirk.
+
 ---
 
 ## Layout
 
-- `src/env/` — headless top-down grid environment, sensors, sound propagation, line of sight
+- `src/env/` — headless top-down grid environment, sensors, sound propagation, line of sight, scent
 - `src/hunter/` — Tom: drives, chemistry, the belief system, the Conductor, memory
 - `src/players/` — Jerrys: archetype-conditioned PPO prey
 - `src/persistence/` — Redis (L1) and SQLite (L2) memory backends
 - `src/render/` — replay renderer (training runs headless)
-- `scripts/` — training, evaluation, and diagnostic tools (trace, classify-survival, memory-loop)
+- `scripts/` — training, evaluation, and diagnostic tools (trace, classify-survival, analyze-loops, memory-loop)
 - `tests/` — unit, integration, and scenario tests
 - `docs/` — design docs, roadmap, decision log (ADRs), retrospectives, findings
 - `data/` — snapshots, replays, training logs *(gitignored)*
@@ -133,9 +162,8 @@ runs headless; the renderer is for inspecting replays after the fact.
 
 Most of the real thinking lives in `docs/` — not just the design and roadmap,
 but the **retrospectives and findings**, which document the failed bets as
-honestly as the wins (including five build cycles spent countering an exploit
-that turned out to be a misread). If you're here to understand *how the project
-actually went* rather than just what it is, start there.
+honestly as the wins. If you're here to understand *how the project actually
+went* rather than just what it is, start there.
 
 ---
 
