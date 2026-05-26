@@ -105,6 +105,8 @@ def main(argv=None):
     p.add_argument("--deterministic", action="store_true")
     p.add_argument("--locker-oxygen", action="store_true",
                    help="Enable the locker oxygen/cooldown mechanic.")
+    p.add_argument("--pursuit-speed-ramp", action="store_true",
+                   help="Enable the pursuit speed-ramp mechanic.")
     p.add_argument("--locker-frac-threshold", type=float, default=0.5,
                    help="in_locker fraction above which a survivor is "
                         "classified LOCKER-CAMP")
@@ -118,7 +120,8 @@ def main(argv=None):
     for seed in seeds:
         world = World(
             WorldConfig(max_ticks=args.max_ticks,
-                        locker_oxygen_enabled=args.locker_oxygen),
+                        locker_oxygen_enabled=args.locker_oxygen,
+                        pursuit_speed_ramp_enabled=args.pursuit_speed_ramp),
             seed=seed,
         )
         world.reset()
@@ -137,7 +140,9 @@ def main(argv=None):
         for _ in range(args.max_ticks):
             ta = tom(world)
             ja = jerry(world)
-            world.step(tom_action=ta, jerry_action=int(ja))
+            _st = getattr(tom, "state", None)
+            _ip = _st.is_committed_pursuit if _st is not None else None
+            world.step(tom_action=ta, jerry_action=int(ja), tom_in_pursuit=_ip)
             total += 1
             if world.jerry.in_locker:
                 locker_ticks += 1

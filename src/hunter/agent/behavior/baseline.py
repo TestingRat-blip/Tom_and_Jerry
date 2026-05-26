@@ -39,6 +39,17 @@ class TomState(IntEnum):
     PURSUE = 3
     ATTACK = 4
 
+    @property
+    def is_committed_pursuit(self) -> bool:
+        """Whether this state counts as committed pursuit for the speed ramp.
+
+        PURSUE/ATTACK ramp Tom's speed; everything else (PATROL/SEARCH/
+        INVESTIGATE) lets it decay. PURSUE is held through brief LOS flickers
+        (Tom keeps chasing toward last-seen), so the ramp persists across
+        momentary loss of sight and only decays when Tom genuinely gives up.
+        """
+        return self in (TomState.PURSUE, TomState.ATTACK)
+
 
 @dataclass(frozen=True, slots=True)
 class ScriptedTomConfig:

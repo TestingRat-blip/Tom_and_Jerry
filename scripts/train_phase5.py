@@ -77,14 +77,15 @@ def build_training_tom(tom_spec: str, seed: int):
 # ---- env factory --------------------------------------------------------
 
 def make_env(seed: int, world_max_ticks: int, archetype: str, tom_spec: str,
-             locker_oxygen: bool = False):
+             locker_oxygen: bool = False, pursuit_speed_ramp: bool = False):
     """Factory closure for SB3 vector envs. Each call returns a NEW env
     configured for the given archetype, training against the given Tom.
     """
     def _init():
         env = JerryEnv(
             world_config=WorldConfig(max_ticks=world_max_ticks,
-                                     locker_oxygen_enabled=locker_oxygen),
+                                     locker_oxygen_enabled=locker_oxygen,
+                                     pursuit_speed_ramp_enabled=pursuit_speed_ramp),
             reward_config=JerryRewardConfig.for_archetype(archetype),
             tom_policy=build_training_tom(tom_spec, seed),
         )
@@ -116,6 +117,7 @@ class EvalAgainstScriptedCallback(BaseCallback):
         world_max_ticks: int,
         tom_spec: str = "scripted",
         locker_oxygen: bool = False,
+        pursuit_speed_ramp: bool = False,
         verbose: int = 1,
     ):
         super().__init__(verbose)
@@ -127,6 +129,7 @@ class EvalAgainstScriptedCallback(BaseCallback):
         self.world_max_ticks = world_max_ticks
         self.tom_spec = tom_spec
         self.locker_oxygen = locker_oxygen
+        self.pursuit_speed_ramp = pursuit_speed_ramp
         self._n_calls_since_eval = 0
 
     def _on_step(self) -> bool:
@@ -184,7 +187,8 @@ class EvalAgainstScriptedCallback(BaseCallback):
             env_seed = self.eval_seed + seed_offset + i
             env = JerryEnv(
                 world_config=WorldConfig(max_ticks=self.world_max_ticks,
-                                         locker_oxygen_enabled=self.locker_oxygen),
+                                         locker_oxygen_enabled=self.locker_oxygen,
+                                         pursuit_speed_ramp_enabled=self.pursuit_speed_ramp),
                 reward_config=JerryRewardConfig.for_archetype(self.archetype),
                 tom_policy=build_training_tom(self.tom_spec, env_seed),
             )
@@ -262,6 +266,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                         "(camping is no longer free). Both training and eval "
                         "envs get the mechanic. Note: does NOT change the obs "
                         "vector — Jerry trains BLIND to its oxygen level.")
+    p.add_argument("--pursuit-speed-ramp", action="store_true",
+                   help="Train against the pursuit speed-ramp env: Tom "
+                        "accelerates during sustained committed pursuit "
+                        "(PURSUE/ATTACK), capping at 1.15x, decaying only when "
+                        "he gives up the chase. Kills pure open kiting and the "
+                        "circle exploit by letting Tom close the DIST-2 floor; "
+                        "forces the prey to break line of sight (use the stage) "
+                        "rather than out-run Tom. Both train and eval envs get "
+                        "it. Like oxygen, Jerry trains BLIND to Tom's speed.")
     return p.parse_args(argv)
 
 
@@ -295,7 +308,8 @@ def main(argv: list[str] | None = None) -> None:
     # Vector env — every env uses the same archetype + opponent + a different seed
     env_fns = [
         make_env(args.seed + i, args.world_max_ticks, args.archetype, args.tom,
-                 locker_oxygen=args.locker_oxygen)
+                 locker_oxygen=args.locker_oxygen,
+                 pursuit_speed_ramp=args.pursuit_speed_ramp)
         for i in range(args.n_envs)
     ]
     if args.subproc:
@@ -335,6 +349,7 @@ def main(argv: list[str] | None = None) -> None:
         world_max_ticks=eval_max_ticks,
         tom_spec=args.tom,
         locker_oxygen=args.locker_oxygen,
+        pursuit_speed_ramp=args.pursuit_speed_ramp,
     )
 
     print(f"Training archetype {args.archetype!r} vs Tom {args.tom!r} "

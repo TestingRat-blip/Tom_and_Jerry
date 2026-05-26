@@ -74,6 +74,9 @@ def main(argv=None):
     p.add_argument("--locker-oxygen", action="store_true",
                    help="Enable the locker oxygen/cooldown mechanic. Use to "
                         "blind-trace an oxygen-unaware Jerry against the wall.")
+    p.add_argument("--pursuit-speed-ramp", action="store_true",
+                   help="Enable the pursuit speed-ramp mechanic (Tom "
+                        "accelerates during sustained pursuit).")
     args = p.parse_args(argv)
 
     jerry, jlabel = make_jerry(args.jerry, args.seed, deterministic=args.deterministic)
@@ -81,7 +84,8 @@ def main(argv=None):
 
     world = World(
         WorldConfig(max_ticks=args.max_ticks,
-                    locker_oxygen_enabled=args.locker_oxygen),
+                    locker_oxygen_enabled=args.locker_oxygen,
+                    pursuit_speed_ramp_enabled=args.pursuit_speed_ramp),
         seed=args.seed,
     )
     world.reset()
@@ -127,7 +131,9 @@ def main(argv=None):
                   f"{f'{world.tom.position.x},{world.tom.position.y}':>9} "
                   f"{f'{world.jerry.position.x},{world.jerry.position.y}':>9}")
 
-        world.step(tom_action=ta, jerry_action=int(ja))
+        in_pursuit = state.is_committed_pursuit if state is not None else None
+        world.step(tom_action=ta, jerry_action=int(ja),
+                   tom_in_pursuit=in_pursuit)
         if not world.jerry.alive:
             print(f"\n*** CAUGHT at tick {world.tick_count} ***")
             break

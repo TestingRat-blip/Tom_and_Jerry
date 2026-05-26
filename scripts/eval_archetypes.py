@@ -118,6 +118,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
              "Required when evaluating a Jerry trained with --locker-oxygen "
              "(its obs vector includes oxygen; the env must match).",
     )
+    p.add_argument(
+        "--pursuit-speed-ramp",
+        action="store_true",
+        help="Enable the pursuit speed-ramp mechanic in the eval env. Use "
+             "when evaluating a Jerry trained with --pursuit-speed-ramp so the "
+             "eval env matches the training env.",
+    )
     return p.parse_args(argv)
 
 
@@ -279,6 +286,7 @@ def evaluate_cell(
     base_seed: int,
     deterministic: bool,
     locker_oxygen: bool = False,
+    pursuit_speed_ramp: bool = False,
 ) -> dict[str, Any]:
     """Run one (archetype, tom_policy) cell. Returns aggregated stats."""
     from stable_baselines3 import PPO
@@ -294,7 +302,8 @@ def evaluate_cell(
         tom = tom_factory(seed)
         env = JerryEnv(
             world_config=WorldConfig(max_ticks=max_ticks,
-                                     locker_oxygen_enabled=locker_oxygen),
+                                     locker_oxygen_enabled=locker_oxygen,
+                                     pursuit_speed_ramp_enabled=pursuit_speed_ramp),
             reward_config=reward_cfg,
             tom_policy=tom,
         )
@@ -411,6 +420,7 @@ def main(argv: list[str] | None = None) -> None:
                 base_seed=args.seed,
                 deterministic=args.deterministic,
                 locker_oxygen=args.locker_oxygen,
+                pursuit_speed_ramp=args.pursuit_speed_ramp,
             )
             cell_dt = time.time() - t_cell
             cell["elapsed_seconds"] = cell_dt
