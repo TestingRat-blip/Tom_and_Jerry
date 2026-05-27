@@ -17,9 +17,10 @@ from src.utils.types import Action, Position
 
 # ---- registry ---------------------------------------------------------
 
-def test_archetype_names_contains_all_six():
+def test_archetype_names_contains_all_seven():
     assert set(ARCHETYPE_NAMES) == {
-        "generalist", "sneaker", "sprinter", "trickster", "camper", "explorer",
+        "generalist", "sneaker", "evader", "sprinter", "trickster", "camper",
+        "explorer",
     }
 
 
@@ -65,6 +66,21 @@ def test_sneaker_has_visibility_penalty():
     cfg = JerryRewardConfig.sneaker()
     assert cfg.penalty_per_tick_visible < 0
     assert cfg.bonus_breaking_los > 0
+
+
+def test_evader_rewards_escape_without_punishing_exposure():
+    """The evader's whole point (vs sneaker): reward breaking LOS, but do NOT
+    punish per-tick visibility — punishing unavoidable exposure against the
+    speed-ramp predator taught the give-up failure (r11). Guard that property so
+    a future edit can't silently re-introduce the visible penalty.
+    """
+    cfg = JerryRewardConfig.evader()
+    assert cfg.penalty_per_tick_visible == 0.0   # the load-bearing difference
+    assert cfg.bonus_breaking_los >= 1.0         # strong carrot for the counterplay
+    # Survival must dominate so staying alive (even seen) beats a quick death.
+    assert cfg.survival_per_tick >= JerryRewardConfig.sneaker().survival_per_tick
+    # And it must be strictly more escape-rewarding than the sneaker it replaces.
+    assert cfg.bonus_breaking_los > JerryRewardConfig.sneaker().bonus_breaking_los
 
 
 def test_sprinter_has_distance_bonus():
@@ -158,9 +174,9 @@ def test_archetypes_produce_different_total_rewards():
         r = env._compute_reward(events=fake_events, done=False)
         rewards[name] = r
 
-    # All six should produce distinct rewards
+    # All seven should produce distinct rewards
     distinct_count = len(set(round(v, 4) for v in rewards.values()))
-    assert distinct_count == 6, f"got rewards {rewards}, only {distinct_count} distinct"
+    assert distinct_count == 7, f"got rewards {rewards}, only {distinct_count} distinct"
 
 
 # ---- LOS-break detection -----------------------------------------------
