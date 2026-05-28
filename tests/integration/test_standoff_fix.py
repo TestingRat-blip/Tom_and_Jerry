@@ -76,8 +76,10 @@ def test_tom_does_not_freeze_on_stale_bookmark():
 
 def test_tom_breaks_standoff_within_a_few_ticks():
     """Behavioral: drive several ticks with Jerry holding still just out of
-    sight while Tom sits on the stale bookmark. Tom must change position
-    within a small number of ticks (not freeze for the whole window)."""
+    sight while Tom sits on the stale bookmark. Tom must genuinely LEAVE the
+    area — not freeze, and not orbit two tiles forever (the bug the first fix
+    attempt missed: it stopped the WAIT but Tom bounced between the bookmark
+    and a neighbor because the bookmark was never abandoned)."""
     world = World(WorldConfig(max_ticks=60), seed=3)
     world.reset()
     tom = ChemicalTom(conductor=Conductor(), seed=3)
@@ -92,21 +94,28 @@ def test_tom_breaks_standoff_within_a_few_ticks():
     tom.last_seen_tick = world.tick_count
     tom.state = TomState.PURSUE
 
-    start = world.tom.position
-    moved_by = None
-    for t in range(15):
+    visited = []
+    for _ in range(15):
         a = tom(world)
-        # Jerry holds still far away (WAIT) — never refreshes the bookmark.
         world.jerry.position = far
         world.step(tom_action=a, jerry_action=int(Action.WAIT),
                    tom_in_pursuit=tom.state.is_committed_pursuit)
-        if world.tom.position != start and moved_by is None:
-            moved_by = t
-            break
-    assert moved_by is not None, (
-        "Tom never moved off the stale bookmark in 15 ticks — standoff open"
+        visited.append((world.tom.position.x, world.tom.position.y))
+
+    # Genuine departure: Tom should visit many distinct tiles and end FAR from
+    # the dead bookmark — not orbit it. A 2-tile bounce would give ~2 distinct
+    # tiles; real search gives many.
+    distinct = len(set(visited))
+    assert distinct >= 5, (
+        f"Tom only visited {distinct} distinct tiles in 15 ticks — he's "
+        f"stuck/orbiting the stale bookmark, not searching: {visited}"
     )
-    assert moved_by <= 3, f"Tom took {moved_by} ticks to break the standoff"
+    final_dist = world.tom.position.manhattan(spot)
+    assert final_dist >= 3, (
+        f"Tom ended {final_dist} tiles from the dead bookmark — still tethered"
+    )
+    # And the bookmark must have been abandoned.
+    assert tom.last_seen_jerry != spot or tom.last_seen_jerry is None
 
 
 def test_normal_pursuit_with_los_unaffected():
