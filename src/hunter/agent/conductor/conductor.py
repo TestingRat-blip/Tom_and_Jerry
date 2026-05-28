@@ -191,6 +191,19 @@ class Conductor:
             self._update_los_break_anchor(world, now, seeing)
         self._was_seeing_jerry = seeing
 
+        # --- SIGHTING invalidation: checked and empty ---
+        # If Tom is NOT seeing Jerry but is standing on a SIGHTING suspicion's
+        # tile, he's physically verified that spot is empty — drop the stale
+        # sighting so it stops re-feeding last_seen_jerry and re-triggering
+        # PURSUE (the standoff exploit, where a prey held just outside sight
+        # range tethers Tom to a dead tile for the whole slow-decay window).
+        # Guard: never invalidate while the run-down anchor is active — that's
+        # the deliberate "keep believing the vanish point" cover-dance counter,
+        # and it owns sighting belief at the anchor tile on purpose.
+        anchor_active = bool(getattr(self, "anchor_active", False))
+        if not seeing and not anchor_active:
+            self.belief.invalidate_sighting_at(world.tom.position, now, radius=1)
+
         # --- NOISE: from events Tom did not himself cause ---
         events = getattr(world, "_events_this_tick", [])
         for ev in events:

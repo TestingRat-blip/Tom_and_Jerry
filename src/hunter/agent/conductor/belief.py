@@ -182,6 +182,38 @@ class SuspicionBelief:
         ))
         self._enforce_cap(now_tick)
 
+    # ---- invalidation -------------------------------------------------
+
+    def invalidate_sighting_at(self, position: Position, now_tick: int,
+                               radius: int = 0) -> bool:
+        """Drop SIGHTING suspicions at/near `position` because Tom has
+        physically reached that location and does NOT see Jerry there — the
+        belief has been checked and falsified ("I went where I thought you
+        were; you're not here").
+
+        This is the counter to the standoff exploit: a prey holding just
+        outside Tom's sight range never refreshes a sighting, but the slow
+        SIGHTING decay (half-life ~25 ticks) keeps re-feeding Tom's
+        last_seen_jerry for the whole pursue window, tethering him to the dead
+        tile. Without belief-level invalidation, clearing the downstream
+        last_seen_jerry mirror is futile — the belief just re-writes it next
+        tick. Killing the suspicion at the source stops the regeneration.
+
+        Only SIGHTING suspicions are invalidated (Tom verified the spot
+        visually). NOISE/SCENT are left alone — standing on a tile doesn't
+        disprove a sound or smell that pointed there. Returns True if any
+        source was removed.
+        """
+        before = len(self._sources)
+        self._sources = [
+            s for s in self._sources
+            if not (
+                s.type == SuspicionType.SIGHTING
+                and s.position.manhattan(position) <= radius
+            )
+        ]
+        return len(self._sources) < before
+
     # ---- time ---------------------------------------------------------
 
     def tick(self, now_tick: int) -> None:

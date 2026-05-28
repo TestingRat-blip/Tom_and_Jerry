@@ -560,6 +560,23 @@ class ChemicalTom(ScriptedTom):
         if best_sighting is not None:
             self.last_seen_jerry = best_sighting[0].position
             self.last_seen_tick = tick
+        else:
+            # No live SIGHTING belief → clear the mirror. CRITICAL for the
+            # PURSUE→search handoff: state selection keeps Tom in PURSUE while
+            # last_seen_jerry is non-None and last_seen_tick is recent. Because
+            # this mirror was previously WRITE-only (set on sighting, never
+            # cleared), a stale value persisted forever once the belief was
+            # invalidated — freezing Tom in PURSUE on a dead bookmark (the
+            # standoff exploit) and starving the sector-sweep PATROL/SEARCH
+            # that would actually re-find Jerry. Clearing here lets the belief
+            # be the single source of truth: when it's empty (Tom checked the
+            # spot and saw nothing, or genuinely lost the trail for ~100+
+            # ticks), PURSUE releases and Tom searches. Safe for normal chases:
+            # a SIGHTING decays over ~100 ticks and is refreshed every time Tom
+            # re-sees Jerry, so the belief is never empty during a live chase —
+            # only in the standoff or true long-loss case, where releasing
+            # PURSUE is the correct behavior.
+            self.last_seen_jerry = None
 
         # NOISE suspicion → Tom's "last noise" memory.
         if best_noise is not None:
@@ -690,27 +707,9 @@ class ChemicalTom(ScriptedTom):
 
             if world._tom_can_see_jerry():
                 target = self._predict_jerry_target(world)
-            elif (
-                self.last_seen_jerry is not None
-                and world.tom.position != self.last_seen_jerry
-            ):
+            elif self.last_seen_jerry is not None:
                 target = self.last_seen_jerry
             else:
-                # Either no bookmark, OR Tom has REACHED the stale last_seen
-                # tile with no LOS — the standoff exploit. A prey that holds 1
-                # tile outside Tom's sight never refreshes the bookmark; Tom
-                # walks to it and finds nothing. The bug is that the bookmark
-                # is never ABANDONED: Tom stays tethered to the dead tile for
-                # the whole pursue-memory window (either frozen via
-                # _step_toward(src==dst)=WAIT, or orbiting it one tile at a
-                # time), while the prey farms survival reward nearby. Fix:
-                # clear the bookmark and drop out of PURSUE so the tether is
-                # gone and the state machine falls through to a real search
-                # (SEARCH/INVESTIGATE/PATROL) that takes Tom AWAY from the dead
-                # spot to re-hunt.
-                if self.last_seen_jerry is not None:
-                    self.last_seen_jerry = None
-                    self.state = TomState.SEARCH
                 return self._patrol(world)
             # Phase 6e: STALK mode holds at a distance instead of closing.
             # Only applies when a Conductor drives the mode and the mode is

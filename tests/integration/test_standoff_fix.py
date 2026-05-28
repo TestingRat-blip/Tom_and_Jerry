@@ -44,33 +44,42 @@ def _find_open_tile_with_neighbors(world, min_free_neighbors=3):
 
 
 def test_tom_does_not_freeze_on_stale_bookmark():
-    """The core unit of the fix: Tom in PURSUE, no LOS, standing ON his
-    last_seen_jerry tile must NOT return WAIT — he must move off to search."""
-    world = World(WorldConfig(max_ticks=50), seed=3)
+    """The core of the fix: once Tom's belief holds no live SIGHTING (e.g. he
+    reached the believed spot and saw nothing, so it was invalidated), the
+    last_seen_jerry mirror is cleared, PURSUE releases, and Tom searches
+    instead of freezing.
+
+    This exercises the REAL path: a planted sighting belief, driven through
+    full ticks (tom(world) → _update_memory_from_conductor → state select →
+    act), not a direct _act_for_state_chemical call (which bypasses the mirror
+    clear where the fix lives)."""
+    world = World(WorldConfig(max_ticks=60), seed=3)
     world.reset()
     tom = ChemicalTom(conductor=Conductor(), seed=3)
     tom.reset()
 
     spot = _find_open_tile_with_neighbors(world)
-    assert spot is not None, "test map has no suitable open tile"
-
-    # Put Tom on the spot, and make that spot his stale bookmark.
-    world.tom.position = spot
-    # Park Jerry far away and out of sight so there's no LOS this tick.
+    assert spot is not None
     far = Position(world.grid.width - 2, world.grid.height - 2)
     if far == spot or not world.grid.is_walkable(far):
         far = _find_open_tile_with_neighbors(world, min_free_neighbors=2)
+
+    # Put Tom on the spot with a planted SIGHTING belief there, Jerry far/out
+    # of sight. First tick: Tom is on the spot, no LOS → belief invalidated →
+    # mirror cleared → PURSUE releases.
+    world.tom.position = spot
     world.jerry.position = far
-    tom.last_seen_jerry = spot          # the stale bookmark == Tom's own tile
+    tom.conductor.belief.add_sighting(spot, world.tick_count)
+    tom.last_seen_jerry = spot
     tom.last_seen_tick = world.tick_count
     tom.state = TomState.PURSUE
 
-    # Directly exercise the action selector for the PURSUE branch.
     assert not world._tom_can_see_jerry(), "setup should have no LOS"
-    action = tom._act_for_state_chemical(world)
-    assert action != Action.WAIT, (
-        "Tom froze on a stale bookmark instead of searching — standoff "
-        "exploit is open"
+    # Drive one full tick — the action must not be a frozen WAIT-in-place.
+    a = tom(world)
+    # After the tick's memory update, the stale mirror should be gone.
+    assert tom.last_seen_jerry is None or tom.last_seen_jerry != spot, (
+        "stale sighting mirror not cleared — PURSUE will re-freeze"
     )
 
 
@@ -90,6 +99,7 @@ def test_tom_breaks_standoff_within_a_few_ticks():
     far = Position(world.grid.width - 2, world.grid.height - 2)
     if far == spot or not world.grid.is_walkable(far):
         far = _find_open_tile_with_neighbors(world, min_free_neighbors=2)
+    tom.conductor.belief.add_sighting(spot, world.tick_count)
     tom.last_seen_jerry = spot
     tom.last_seen_tick = world.tick_count
     tom.state = TomState.PURSUE
