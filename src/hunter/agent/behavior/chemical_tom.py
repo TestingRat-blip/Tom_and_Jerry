@@ -690,9 +690,20 @@ class ChemicalTom(ScriptedTom):
 
             if world._tom_can_see_jerry():
                 target = self._predict_jerry_target(world)
-            elif self.last_seen_jerry is not None:
+            elif (
+                self.last_seen_jerry is not None
+                and world.tom.position != self.last_seen_jerry
+            ):
                 target = self.last_seen_jerry
             else:
+                # Either no bookmark, OR Tom is standing ON the stale last-seen
+                # tile with no LOS — the standoff exploit (a prey that holds 1
+                # tile outside Tom's sight never refreshes the bookmark, and
+                # _step_toward(src==dst) returns WAIT, freezing Tom on the spot
+                # for the whole pursue-memory window while the prey farms
+                # survival reward). Route to _patrol, which actively searches
+                # AND has its own no-stall guard, so Tom moves off the dead
+                # bookmark and re-hunts instead of staring at an empty tile.
                 return self._patrol(world)
             # Phase 6e: STALK mode holds at a distance instead of closing.
             # Only applies when a Conductor drives the mode and the mode is
